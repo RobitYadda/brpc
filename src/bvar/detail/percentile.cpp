@@ -116,8 +116,8 @@ Percentile &Percentile::operator<<(int64_t latency) {
         // overflowed value which is included in last range does not affect
         // overall distribution of other values too much.
         if (!_debug_name.empty()) {
-            LOG(WARNING) << "Input=" << latency << " to `" << _debug_name
-                       << "' is negative, drop";
+//            LOG(WARNING) << "Input=" << latency << " to `" << _debug_name
+//                       << "' is negative, drop";
         } else {
             LOG(WARNING) << "Input=" << latency << " to Percentile("
                        << (void*)this << ") is negative, drop";
