@@ -33,6 +33,7 @@
 #if BRPC_WITH_GLOG
 # include <glog/logging.h>
 # include <glog/raw_logging.h>
+#define noflush ""
 // define macros that not implemented in glog
 # ifndef DCHECK_IS_ON   // glog didn't define DCHECK_IS_ON in older version
 #  if defined(NDEBUG)

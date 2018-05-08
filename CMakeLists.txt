@@ -15,7 +15,7 @@ else()
     message(WARNING "You are using an unsupported compiler! Compilation has only been tested with Clang and GCC.")
 endif()
 
-option(BRPC_WITH_GLOG "With glog" OFF)
+option(BRPC_WITH_GLOG "With glog" ON)
 option(DEBUG "Print debug logs" OFF)
 option(WITH_DEBUG_SYMBOLS "With debug symbols" ON)
 option(BUILD_UNIT_TESTS "Whether to build unit tests" OFF)
