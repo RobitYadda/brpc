@@ -104,7 +104,7 @@ DEFINE_bool(reuse_addr, true, "Bind to ports in TIME_WAIT state");
 BRPC_VALIDATE_GFLAG(reuse_addr, PassValidate);
 
 // Following services may have security issues and are disabled by default.
-DEFINE_bool(enable_dir_service, false, "Enable /dir");
+DEFINE_bool(enable_dir_service, true, "Enable /dir");
 DEFINE_bool(enable_threads_service, false, "Enable /threads");
 
 DECLARE_int32(usercode_backup_threads);

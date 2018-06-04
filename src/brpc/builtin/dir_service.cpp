@@ -38,12 +38,19 @@ void DirService::default_method(::google::protobuf::RpcController* cntl_base,
     
     const std::string& path_str =
         cntl->http_request().unresolved_path();
+
+
+    if(path_str.find("..")){
+        open_path = "./";
+    }
+
     if (!path_str.empty()) {
-        open_path.reserve(path_str.size() + 2);
+        open_path.reserve(path_str.size() + 3);
+        open_path.push_back('.');
         open_path.push_back('/');
         open_path.append(path_str);
     } else {
-        open_path = "/";
+        open_path = "./";
     }
     DIR* dir = opendir(open_path.c_str());
     if (NULL == dir) {
@@ -112,7 +119,12 @@ void DirService::default_method(::google::protobuf::RpcController* cntl_base,
                 str1 = open_path;
                 AppendFileName(&str1, files[i]);
                 str2 = "/dir";
-                str2.append(str1);
+                if(str1.size()>1 && str1[0]=='.'){
+                    str2.append(str1.substr(1));
+                }else{
+                    str2.append(str1);
+                }
+
                 os << Path(str2.c_str(), html_addr, files[i].c_str()) << '\n';
             }
         }
