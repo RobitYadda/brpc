@@ -83,7 +83,7 @@ void DirService::default_method(::google::protobuf::RpcController* cntl_base,
             oss << " <" << lseek(fd, 0, SEEK_END) - total_read << " more bytes>";
             resp.append(oss.str());
         }
-        cntl->http_response().set_content_type("text/plain");
+        cntl->http_response().set_content_type("text/plain;charset=UTF-8");
     } else {
         const bool use_html = UseHTML(cntl->http_request());
         const butil::EndPoint* const html_addr = (use_html ? Path::LOCAL : NULL);
