@@ -88,7 +88,7 @@ void DirService::default_method(::google::protobuf::RpcController* cntl_base,
         const bool use_html = UseHTML(cntl->http_request());
         const butil::EndPoint* const html_addr = (use_html ? Path::LOCAL : NULL);
         cntl->http_response().set_content_type(
-            use_html ? "text/html" : "text/plain");
+            use_html ? "text/html;charset=UTF-8" : "text/plain;charset=UTF-8");
 
         std::vector<std::string> files;
         files.reserve(32);
