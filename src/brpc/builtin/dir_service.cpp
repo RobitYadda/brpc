@@ -36,9 +36,40 @@ void DirService::default_method(::google::protobuf::RpcController* cntl_base,
     Controller *cntl = static_cast<Controller*>(cntl_base);
     std::string open_path;
     
-    const std::string& path_str =
+    std::string path_str =
         cntl->http_request().unresolved_path();
 
+    auto fromHex = [=](const char &x)
+    {
+        return isdigit(x) ? x-'0' : x-'A'+10;
+    };
+
+   auto URLDecode = [&](std::string& strOrg)
+    {
+        std::string sOut;
+        for( size_t ix = 0; ix < strOrg.size(); ix++ )
+        {
+            char ch = 0;
+            if(strOrg[ix]=='%')
+            {
+                ch = (fromHex(strOrg[ix+1])<<4);
+                ch |= fromHex(strOrg[ix+2]);
+                ix += 2;
+            }
+            else if(strOrg[ix] == '+')
+            {
+                ch = ' ';
+            }
+            else
+            {
+                ch = strOrg[ix];
+            }
+            sOut += (char)ch;
+        }
+        return sOut;
+    };
+
+    path_str = URLDecode(path_str);
 
     if(path_str.find("..")){
         open_path = "./";
