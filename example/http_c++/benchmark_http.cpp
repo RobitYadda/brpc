@@ -31,7 +31,7 @@ DEFINE_int32(timeout_ms, 100, "RPC timeout in milliseconds");
 DEFINE_int32(max_retry, 3, "Max retries(not including the first RPC)"); 
 DEFINE_bool(dont_fail, false, "Print fatal when some call failed");
 DEFINE_int32(dummy_port, -1, "Launch dummy server at this port");
-DEFINE_string(protocol, "http", "http or h2c");
+DEFINE_string(protocol, "http", "Client-side protocol");
 
 bvar::LatencyRecorder g_latency_recorder("client");
 
@@ -87,19 +87,21 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
-    std::vector<bthread_t> tids;
-    tids.resize(FLAGS_thread_num);
+    std::vector<bthread_t> bids;
+    std::vector<pthread_t> pids;
     if (!FLAGS_use_bthread) {
+        pids.resize(FLAGS_thread_num);
         for (int i = 0; i < FLAGS_thread_num; ++i) {
-            if (pthread_create(&tids[i], NULL, sender, &channel) != 0) {
+            if (pthread_create(&pids[i], NULL, sender, &channel) != 0) {
                 LOG(ERROR) << "Fail to create pthread";
                 return -1;
             }
         }
     } else {
+        bids.resize(FLAGS_thread_num);
         for (int i = 0; i < FLAGS_thread_num; ++i) {
             if (bthread_start_background(
-                    &tids[i], NULL, sender, &channel) != 0) {
+                    &bids[i], NULL, sender, &channel) != 0) {
                 LOG(ERROR) << "Fail to create bthread";
                 return -1;
             }
@@ -120,9 +122,9 @@ int main(int argc, char* argv[]) {
     LOG(INFO) << "benchmark_http is going to quit";
     for (int i = 0; i < FLAGS_thread_num; ++i) {
         if (!FLAGS_use_bthread) {
-            pthread_join(tids[i], NULL);
+            pthread_join(pids[i], NULL);
         } else {
-            bthread_join(tids[i], NULL);
+            bthread_join(bids[i], NULL);
         }
     }
 

@@ -1,19 +1,28 @@
 [English version](../en/http_service.md)
 
-这里指我们通常说的HTTP服务，而不是可通过HTTP访问的pb服务。
+这里指我们通常说的http/h2服务，而不是可通过http/h2访问的pb服务。
 
-虽然用不到pb消息，但brpc中的HTTP服务接口也得定义在.proto文件中，只是request和response都是空的结构体。这确保了所有的服务声明集中在proto文件中，而不是散列在proto文件、程序、配置等多个地方。示例代码见[http_server.cpp](https://github.com/brpc/brpc/blob/master/example/http_c++/http_server.cpp)。
+虽然用不到pb消息，但brpc中的http/h2服务接口也得定义在proto文件中，只是request和response都是空的结构体。这确保了所有的服务声明集中在proto文件中，而不是散列在proto文件、程序、配置等多个地方。
+
+#示例
+[http_server.cpp](https://github.com/brpc/brpc/blob/master/example/http_c++/http_server.cpp)。
+
+# 关于h2
+
+brpc把HTTP/2协议统称为"h2"，不论是否加密。然而未开启ssl的HTTP/2连接在/connections中会按官方名称h2c显示，而开启ssl的会显示为h2。
+
+brpc中http和h2的编程接口基本没有区别。除非特殊说明，所有提到的http特性都同时对h2有效。
 
 # URL类型
 
 ## 前缀为/ServiceName/MethodName
 
-定义一个service名为ServiceName(不包含package名), method名为MethodName的pb服务，且让request和reponse定义为空，则该服务默认在/ServiceName/MethodName上提供HTTP服务。
+定义一个service名为ServiceName(不包含package名), method名为MethodName的pb服务，且让request和reponse定义为空，则该服务默认在/ServiceName/MethodName上提供http/h2服务。
 
-request和response可为空是因为http数据在Controller中：
+request和response可为空是因为数据都在Controller中：
 
-* http request的header在Controller.http_request()中，body在Controller.request_attachment()中。
-* http response的header在Controller.http_response()中，body在Controller.response_attachment()中。
+* http/h2 request的header在Controller.http_request()中，body在Controller.request_attachment()中。
+* http/h2 response的header在Controller.http_response()中，body在Controller.response_attachment()中。
 
 实现步骤如下：
 
@@ -71,7 +80,7 @@ public:
 
 ## 前缀为/ServiceName
 
-资源类的HTTP服务可能需要这样的URL，ServiceName后均为动态内容。比如/FileService/foobar.txt代表./foobar.txt，/FileService/app/data/boot.cfg代表./app/data/boot.cfg。
+资源类的http/h2服务可能需要这样的URL，ServiceName后均为动态内容。比如/FileService/foobar.txt代表./foobar.txt，/FileService/app/data/boot.cfg代表./app/data/boot.cfg。
 
 实现方法：
 
@@ -120,15 +129,15 @@ public:
 brpc支持为service中的每个方法指定一个URL。API如下：
 
 ```c++
-// 如果restful_mappings不为空, service中的方法可通过指定的URL被HTTP协议访问，而不是/ServiceName/MethodName.
+// 如果restful_mappings不为空, service中的方法可通过指定的URL被http/h2协议访问，而不是/ServiceName/MethodName.
 // 映射格式："PATH1 => NAME1, PATH2 => NAME2 ..."
-// PATHs是有效的HTTP路径, NAMEs是service中的方法名.
+// PATHs是有效的路径, NAMEs是service中的方法名.
 int AddService(google::protobuf::Service* service,
                ServiceOwnership ownership,
                butil::StringPiece restful_mappings);
 ```
 
-下面的QueueService包含多个http方法。如果我们像之前那样把它插入server，那么只能通过`/QueueService/start, /QueueService/stop`等url来访问。
+下面的QueueService包含多个方法。如果我们像之前那样把它插入server，那么只能通过`/QueueService/start, /QueueService/stop`等url来访问。
 
 ```protobuf
 service QueueService {
@@ -167,7 +176,7 @@ if (server.AddService(&queue_svc,
 关于映射规则：
 
 - 多个路径可映射至同一个方法。
-- service不要求是纯HTTP，pb service也支持。
+- service不要求是纯http/h2，pb service也支持。
 - 没有出现在映射中的方法仍旧通过/ServiceName/MethodName访问。出现在映射中的方法不再能通过/ServiceName/MethodName访问。
 - ==> ===> ...都是可以的。开头结尾的空格，额外的斜杠(/)，最后多余的逗号，都不要紧。
 - PATH和PATH/*两者可以共存。
@@ -273,13 +282,13 @@ cntl->http_request().uri().SetQuery("time", "2015/1/2");
 
 # 调试
 
-打开[-http_verbose](http://brpc.baidu.com:8765/flags/http_verbose)即可在stderr看到所有的http request和response，注意这应该只用于线下调试，而不是线上程序。
+打开[-http_verbose](http://brpc.baidu.com:8765/flags/http_verbose)即可看到所有的http/h2 request和response，注意这应该只用于线下调试，而不是线上程序。
 
 # 压缩response body
 
 http服务常对http body进行压缩，可以有效减少网页的传输时间，加快页面的展现速度。
 
-设置Controller::set_response_compress_type(baidu::rpc::COMPRESS_TYPE_GZIP)后将**尝试**用gzip压缩http body。“尝试“指的是压缩有可能不发生，条件有：
+设置Controller::set_response_compress_type(brpc::COMPRESS_TYPE_GZIP)后将**尝试**用gzip压缩http body。“尝试“指的是压缩有可能不发生，条件有：
 
 - 请求中没有设置Accept-encoding或不包含gzip。比如curl不加--compressed时是不支持压缩的，这时server总是会返回不压缩的结果。
 
@@ -308,51 +317,8 @@ if (encoding != NULL && *encoding == "gzip") {
 // cntl->request_attachment()中已经是解压后的数据了
 ```
 
-# 开启HTTPS
-
-要开启HTTPS，首先确保代码依赖了最新的openssl库。如果openssl版本很旧，会有严重的安全漏洞，支持的加密算法也少，违背了开启SSL的初衷。然后设置ServerOptions.ssl_options.
-```c++
-// Certificate structure
-struct CertInfo {
-    // Certificate in PEM format.
-    // Note that CN and alt subjects will be extracted from the certificate,
-    // and will be used as hostnames. Requests to this hostname (provided SNI
-    // extension supported) will be encrypted using this certifcate.
-    // Supported both file path and raw string
-    std::string certificate;
-
-    // Private key in PEM format.
-    // Supported both file path and raw string based on prefix:
-    std::string private_key;
-
-    // Additional hostnames besides those inside the certificate. Wildcards
-    // are supported but it can only appear once at the beginning (i.e. *.xxx.com).
-    std::vector<std::string> sni_filters;
-};
-
-struct SSLOptions {
-    // Default certificate which will be loaded into server. Requests
-    // without hostname or whose hostname doesn't have a corresponding
-    // certificate will use this certificate. MUST be set to enable SSL.
-    CertInfo default_cert;
-
-    // Additional certificates which will be loaded into server. These
-    // provide extra bindings between hostnames and certificates so that
-    // we can choose different certificates according to different hostnames.
-    // See `CertInfo' for detail.
-    std::vector<CertInfo> certs;
-
-    // When set, requests without hostname or whose hostname can't be found in
-    // any of the cerficates above will be dropped. Otherwise, `default_cert'
-    // will be used.
-    // Default: false
-    bool strict_sni;
- 
-    // ... Other options
-};
-```
-其余选项还包括：密钥套件选择（推荐密钥ECDHE-RSA-AES256-GCM-SHA384，chrome默认第一优先密钥，安全性很高，但比较耗性能）、session复用等，具体见[server.h](https://github.com/brpc/brpc/blob/master/src/brpc/server.h)。
-开启HTTPS后，原先的HTTP请求仍可以通过同一个端口被访问，Server会自动判断哪些是HTTP，哪些是HTTPS；用户可通过Controller::is_ssl()判断是否是HTTPS。从这一点来说，brpc中的HTTPS更多是让server多支持一种协议，而不适合作为加密通道。
+# 处理https请求
+https是http over SSL的简称，SSL并不是http特有的，而是对所有协议都有效。开启服务端SSL的一般性方法见[这里](server.md#开启ssl)。
 
 # 性能
 
@@ -391,7 +357,7 @@ brpc server支持发送超大或无限长的body。方法如下:
 
 这个错误在于brpc server直接关闭了http连接而没有发送任何回复。
 
-brpc server同端口支持多种协议，当它无法解析某个http请求时无法说这个请求一定是HTTP。server会对一些基本可确认是HTTP的请求返回HTTP 400错误并关闭连接，但如果是HTTP method错误(在http包开头)或严重的格式错误（可能由HTTP client的bug导致），server仍会直接断开连接，导致nginx的final fail。
+brpc server一个端口支持多种协议，当它无法解析某个http请求时无法说这个请求一定是HTTP。server会对一些基本可确认是HTTP的请求返回HTTP 400错误并关闭连接，但如果是HTTP method错误(在http包开头)或严重的格式错误（可能由HTTP client的bug导致），server仍会直接断开连接，导致nginx的final fail。
 
 解决方案: 在使用Nginx转发流量时，通过指定$HTTP_method只放行允许的方法或者干脆设置proxy_method为指定方法。
 

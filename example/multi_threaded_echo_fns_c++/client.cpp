@@ -37,7 +37,6 @@ DEFINE_int32(backup_timeout_ms, -1, "backup timeout in milliseconds");
 DEFINE_int32(max_retry, 3, "Max retries(not including the first RPC)"); 
 DEFINE_bool(dont_fail, false, "Print fatal when some call failed");
 DEFINE_int32(dummy_port, -1, "Launch dummy server at this port");
-DEFINE_string(http_content_type, "application/json", "Content type of http request");
 
 std::string g_attachment;
 
@@ -62,13 +61,9 @@ static void* sender(void* arg) {
         const int input = ((thread_index & 0xFFF) << 20) | (log_id & 0xFFFFF);
         request.set_value(input);
         cntl.set_log_id(log_id ++);  // set by user
-        if (FLAGS_protocol != "http" && FLAGS_protocol != "h2c") {
-            // Set attachment which is wired to network directly instead of 
-            // being serialized into protobuf messages.
-            cntl.request_attachment().append(g_attachment);
-        } else {
-            cntl.http_request().set_content_type(FLAGS_http_content_type);
-        }
+        // Set attachment which is wired to network directly instead of 
+        // being serialized into protobuf messages.
+        cntl.request_attachment().append(g_attachment);
 
         // Because `done'(last parameter) is NULL, this function waits until
         // the response comes back or error occurs(including timedout).
@@ -119,19 +114,21 @@ int main(int argc, char* argv[]) {
         brpc::StartDummyServerAt(FLAGS_dummy_port);
     }
 
-    std::vector<bthread_t> tids;
-    tids.resize(FLAGS_thread_num);
+    std::vector<bthread_t> bids;
+    std::vector<pthread_t> pids;
     if (!FLAGS_use_bthread) {
+        pids.resize(FLAGS_thread_num);
         for (int i = 0; i < FLAGS_thread_num; ++i) {
-            if (pthread_create(&tids[i], NULL, sender, &channel) != 0) {
+            if (pthread_create(&pids[i], NULL, sender, &channel) != 0) {
                 LOG(ERROR) << "Fail to create pthread";
                 return -1;
             }
         }
     } else {
+        bids.resize(FLAGS_thread_num);
         for (int i = 0; i < FLAGS_thread_num; ++i) {
             if (bthread_start_background(
-                    &tids[i], NULL, sender, &channel) != 0) {
+                    &bids[i], NULL, sender, &channel) != 0) {
                 LOG(ERROR) << "Fail to create bthread";
                 return -1;
             }
@@ -147,9 +144,9 @@ int main(int argc, char* argv[]) {
     LOG(INFO) << "EchoClient is going to quit";
     for (int i = 0; i < FLAGS_thread_num; ++i) {
         if (!FLAGS_use_bthread) {
-            pthread_join(tids[i], NULL);
+            pthread_join(pids[i], NULL);
         } else {
-            bthread_join(tids[i], NULL);
+            bthread_join(bids[i], NULL);
         }
     }
 

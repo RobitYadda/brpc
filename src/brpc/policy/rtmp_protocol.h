@@ -112,6 +112,7 @@ const char* messagetype2str(uint8_t);
 #define RTMP_AMF0_COMMAND_CALL               "call"
 #define RTMP_AMF0_SET_DATAFRAME              "@setDataFrame"
 #define RTMP_AMF0_ON_META_DATA               "onMetaData"
+#define RTMP_AMF0_ON_CUE_POINT               "onCuePoint"
 #define RTMP_AMF0_SAMPLE_ACCESS              "|RtmpSampleAccess"
 
 #define RTMP_INFO_LEVEL_STATUS               "status"
@@ -559,7 +560,7 @@ void SerializeRtmpRequest(butil::IOBuf* buf,
                           Controller* cntl,
                           const google::protobuf::Message* request);
 
-// ============== inlien impl. =================
+// ============== inline impl. =================
 // TODO(gejun): impl. do not work for big-endian machines.
 inline uint8_t Read1Byte(const void* void_buf) {
     return *(const char*)void_buf;

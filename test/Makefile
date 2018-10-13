@@ -2,15 +2,17 @@ NEED_GPERFTOOLS=1
 NEED_GTEST=1
 include ../config.mk
 CPPFLAGS+=-DBTHREAD_USE_FAST_PTHREAD_MUTEX -D__const__= -D_GNU_SOURCE -DUSE_SYMBOLIZE -DNO_TCMALLOC -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS -DUNIT_TEST -Dprivate=public -Dprotected=public -DBVAR_NOT_LINK_DEFAULT_VARIABLES --include sstream_workaround.h
-CXXFLAGS=$(CPPFLAGS) -O2 -pipe -Wall -W -fPIC -fstrict-aliasing -Wno-invalid-offsetof -Wno-unused-parameter -fno-omit-frame-pointer -std=c++0x
+CXXFLAGS=$(CPPFLAGS) -pipe -Wall -W -fPIC -fstrict-aliasing -Wno-invalid-offsetof -Wno-unused-parameter -fno-omit-frame-pointer -std=c++0x
 
 #required by butil/crc32.cc to boost performance for 10x
 ifeq ($(shell test $(GCC_VERSION) -ge 40400; echo $$?),0)
 	CXXFLAGS+=-msse4 -msse4.2
 endif
 #not solved yet
-ifeq ($(shell test $(GCC_VERSION) -ge 70000; echo $$?),0)
+ifeq ($(CC),gcc)
+ ifeq ($(shell test $(GCC_VERSION) -ge 70000; echo $$?),0)
 	CXXFLAGS+=-Wno-aligned-new
+ endif
 endif
 
 HDRPATHS=-I. -I../src $(addprefix -I, $(HDRS))
@@ -118,6 +120,14 @@ ifeq ($(SYSTEM), Linux)
 						  proc_maps_linux_unittest.cc
 endif
 
+# bthread_* functions are used in logging.cc, and they need to be marked as
+# weak symbols explicitly in Darwin system.
+ifeq ($(SYSTEM), Darwin)
+	DYNAMIC_LINKINGS+=-Wl,-U,_bthread_getspecific
+	DYNAMIC_LINKINGS+=-Wl,-U,_bthread_setspecific
+	DYNAMIC_LINKINGS+=-Wl,-U,_bthread_key_create
+endif
+
 TEST_BUTIL_OBJS = iobuf.pb.o $(addsuffix .o, $(basename $(TEST_BUTIL_SOURCES))) 
 
 TEST_BVAR_SOURCES = $(wildcard bvar_*_unittest.cpp)
@@ -156,23 +166,47 @@ FORCE:
 
 test_butil:libbrpc.dbg.a $(TEST_BUTIL_OBJS)
 	@echo "Linking $@"
+ifeq ($(SYSTEM),Linux)
 	@$(CXX) -o $@ $(LIBPATHS) -Xlinker "-(" $^ -Wl,-Bstatic $(STATIC_LINKINGS) -Wl,-Bdynamic -Xlinker "-)" $(DYNAMIC_LINKINGS)
+else ifeq ($(SYSTEM),Darwin)
+	@$(CXX) -o $@ $(LIBPATHS) $^ $(STATIC_LINKINGS) $(DYNAMIC_LINKINGS)
+endif
 
 test_bvar:libbrpc.dbg.a $(TEST_BVAR_OBJS)
 	@echo "Linking $@"
+ifeq ($(SYSTEM),Linux)
 	@$(CXX) -o $@ $(LIBPATHS) -Xlinker "-(" $(TEST_BVAR_OBJS) libbvar.dbg.a -Wl,-Bstatic $(STATIC_LINKINGS) -Wl,-Bdynamic -Xlinker "-)" $(DYNAMIC_LINKINGS)
+else ifeq ($(SYSTEM),Darwin)
+	@$(CXX) -o $@ $(LIBPATHS) $(TEST_BVAR_OBJS) libbvar.dbg.a $(STATIC_LINKINGS) $(DYNAMIC_LINKINGS)
+endif
 
 bthread%unittest:libbrpc.dbg.a bthread%unittest.o
 	@echo "Linking $@"
+ifeq ($(SYSTEM),Linux)
 	@$(CXX) -o $@ $(LIBPATHS) -Xlinker "-(" $^ -Wl,-Bstatic $(STATIC_LINKINGS) -Wl,-Bdynamic -Xlinker "-)" $(DYNAMIC_LINKINGS)
+else ifeq ($(SYSTEM),Darwin)
+	@$(CXX) -o $@ $(LIBPATHS) $^ $(STATIC_LINKINGS) $(DYNAMIC_LINKINGS)
+endif
 
 brpc_%_unittest:libbrpc.dbg.a $(TEST_PROTO_OBJS) brpc_%_unittest.o
 	@echo "Linking $@"
+ifeq ($(SYSTEM),Linux)
 	@$(CXX) -o $@ $(LIBPATHS) -Xlinker "-(" $^ -Wl,-Bstatic $(STATIC_LINKINGS) -Wl,-Bdynamic -Xlinker "-)" $(DYNAMIC_LINKINGS)
+else ifeq ($(SYSTEM),Darwin)
+	@$(CXX) -o $@ $(LIBPATHS) $^ $(STATIC_LINKINGS) $(DYNAMIC_LINKINGS)
+endif
 
 %.pb.cc %.pb.h:%.proto
 	@echo "Generating $@"
 	@$(PROTOC) --cpp_out=. --proto_path=. --proto_path=../src --proto_path=$(PROTOBUF_HDR) $<
+
+baidu_time_unittest.o:baidu_time_unittest.cpp | libbrpc.dbg.a
+	@echo "Compiling $@"
+	@$(CXX) -c $(HDRPATHS) -O2 $(CXXFLAGS) $< -o $@
+
+brpc_h2_unsent_message_unittest.o:brpc_h2_unsent_message_unittest.cpp | libbrpc.dbg.a
+	@echo "Compiling $@"
+	@$(CXX) -c $(HDRPATHS) -O2 $(CXXFLAGS) $< -o $@
 
 %.o:%.cpp | libbrpc.dbg.a
 	@echo "Compiling $@"

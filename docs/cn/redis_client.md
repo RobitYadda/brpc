@@ -11,7 +11,7 @@
 
 像http一样，brpc保证在最差情况下解析redis reply的时间复杂度也是O(N)，N是reply的字节数，而不是O($N^2$)。当reply是个较大的数组时，这是比较重要的。
 
-加上[-redis_verbose](#查看发出的请求和收到的回复)后会在stderr上打印出所有的redis request和response供调试。
+加上[-redis_verbose](#查看发出的请求和收到的回复)后会打印出所有的redis request和response供调试。
 
 # 访问单台redis
 
@@ -145,19 +145,19 @@ response中的所有reply的ownership属于response。当response析构时，rep
 
 # 访问redis集群
 
-建立一个使用一致性哈希负载均衡算法(c_md5或c_murmurhash)的channel就能访问挂载在对应名字服务下的redis集群了。注意每个RedisRequest应只包含一个操作或确保所有的操作是同一个key。如果request包含了多个操作，在当前实现下这些操作总会送向同一个server，假如对应的key分布在多个server上，那么结果就不对了，这个情况下你必须把一个request分开为多个，每个包含一个操作。
+建立一个使用一致性哈希负载均衡算法(c_md5或c_murmurhash)的channel就能访问挂载在对应命名服务下的redis集群了。注意每个RedisRequest应只包含一个操作或确保所有的操作是同一个key。如果request包含了多个操作，在当前实现下这些操作总会送向同一个server，假如对应的key分布在多个server上，那么结果就不对了，这个情况下你必须把一个request分开为多个，每个包含一个操作。
 
 或者你可以沿用常见的[twemproxy](https://github.com/twitter/twemproxy)方案。这个方案虽然需要额外部署proxy，还增加了延时，但client端仍可以像访问单点一样的访问它。
 
 # 查看发出的请求和收到的回复
 
- 打开[-redis_verbose](http://brpc.baidu.com:8765/flags/redis_verbose)即可在stderr看到所有的redis request和response，注意这应该只用于线下调试，而不是线上程序。
+ 打开[-redis_verbose](http://brpc.baidu.com:8765/flags/redis_verbose)即看到所有的redis request和response，注意这应该只用于线下调试，而不是线上程序。
 
 打开[-redis_verbose_crlf2space](http://brpc.baidu.com:8765/flags/redis_verbose_crlf2space)可让打印内容中的CRLF (\r\n)变为空格，方便阅读。
 
 | Name                     | Value | Description                              | Defined At                         |
 | ------------------------ | ----- | ---------------------------------------- | ---------------------------------- |
-| redis_verbose            | false | [DEBUG] Print EVERY redis request/response to stderr | src/brpc/policy/redis_protocol.cpp |
+| redis_verbose            | false | [DEBUG] Print EVERY redis request/response | src/brpc/policy/redis_protocol.cpp |
 | redis_verbose_crlf2space | false | [DEBUG] Show \r\n as a space             | src/brpc/redis.cpp                 |
 
 # 性能

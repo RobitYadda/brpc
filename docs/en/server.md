@@ -251,9 +251,12 @@ server.RunUntilAskedToQuit();
 
 Services can be added or removed after Join() returns and server can be Start() again.
 
-# Accessed by HTTP client
+# Accessed by http/h2
 
-Services using protobuf can be accessed via http+json generally. The json string stored in http body is convertible to/from corresponding protobuf message. [echo server](https://github.com/brpc/brpc/blob/master/example/echo_c%2B%2B/server.cpp) as an example, is accessible from [curl](https://curl.haxx.se/).
+Services using protobuf can be accessed via http/h2+json generally. The json string stored in body is convertible to/from corresponding protobuf message.
+
+[echo server](https://github.com/brpc/brpc/blob/master/example/echo_c%2B%2B/server.cpp) as an example, is accessible from [curl](https://curl.haxx.se/).
+
 
 ```shell
 # -H 'Content-Type: application/json' is optional
@@ -261,7 +264,7 @@ $ curl -d '{"message":"hello"}' http://brpc.baidu.com:8765/EchoService/Echo
 {"message":"hello"}
 ```
 
-Note: Set `Content-Type: application/proto`  to access services with http + protobuf-serialized-data, which performs better at serialization.
+Note: Set `Content-Type: application/proto` to access services with http/h2 + protobuf-serialized-data, which performs better at serialization.
 
 ## json<=>pb
 
@@ -271,7 +274,7 @@ When -pb_enum_as_number is turned on, enums in pb are converted to values instea
 
 ## Adapt old clients
 
-Early-version brpc allows pb service being accessed via http without setting the pb request, even if there're required fields in. This kind of service often parses http requests and sets http responses by itself, and does not touch the pb request. However this behavior is still very dangerous: a service with an undefined request. 
+Early-version brpc allows pb service being accessed via http without filling the pb request, even if there're required fields. This kind of service often parses http requests and sets http responses by itself, and does not touch the pb request. However this behavior is still very dangerous: a service with an undefined request. 
 
 This kind of services may meet issues after upgrading to latest brpc, which already deprecated the behavior for a long time. To help these services to upgrade, brpc allows bypassing the conversion from http body to pb request (so that users can parse http requests differently), the setting is as follows:
 
@@ -279,13 +282,13 @@ This kind of services may meet issues after upgrading to latest brpc, which alre
 brpc::ServiceOptions svc_opt;
 svc_opt.ownership = ...;
 svc_opt.restful_mappings = ...;
-svc_opt.allow_http_body_to_pb = false; // turn off conversion from http body to pb request
+svc_opt.allow_http_body_to_pb = false; // turn off conversion from http/h2 body to pb request
 server.AddService(service, svc_opt);
 ```
 
-After the setting, service does not convert http body to pb request after receiving http request, which also makes the pb request undefined. Users have to parse the http body by themselves when `cntl->request_protocol() == brpc::PROTOCOL_HTTP` is true which indicates the request is from http.
+After the setting, service does not convert the body to pb request after receiving http/h2 request, which also makes the pb request undefined. Users have to parse the body by themselves when `cntl->request_protocol() == brpc::PROTOCOL_HTTP || cntl->request_protocol() == brpc::PROTOCOL_H2` is true which indicates the request is from http/h2.
 
-As a correspondence, if cntl->response_attachment() is not empty and pb response is set as well, brpc does not report the ambiguous anymore, instead cntl->response_attachment() will be used as body of the http response. This behavior is unaffected by setting allow_http_body_to_pb or not. If the relaxation results in more users' errors, we may restrict it in future.
+As a correspondence, if cntl->response_attachment() is not empty and pb response is set as well, brpc does not report the ambiguous anymore, instead cntl->response_attachment() will be used as body of the http/h2 response. This behavior is unaffected by setting allow_http_body_to_pb or not. If the relaxation results in more users' errors, we may restrict it in future.
 
 # Protocols
 
@@ -295,7 +298,9 @@ Server detects supported protocols automatically, without assignment from users.
 
 - [Streaming RPC](streaming_rpc.md), shown as "streaming_rpc", enabled by default.
 
-- http 1.0/1.1, shown as "http", enabled by default.
+- http/1.0 and http/1.1, shown as "http", enabled by default.
+
+- http/2 and gRPC, shown as "h2c"(unencrypted) or "h2"(encrypted), enabled by default.
 
 - Protocol of RTMP, shown as "rtmp", enabled by default.
 
@@ -454,6 +459,66 @@ Attachment is not compressed by framework.
 
 In http, attachment corresponds to [message body](http://www.w3.org/Protocols/rfc2616/rfc2616-sec4.html), namely the data to post to client is stored in response_attachment().
 
+## Turn on SSL
+
+Update openssl to the latest version before turning on SSL, since older versions of openssl may have severe security problems and support less encryption algorithms, which is against with the purpose of using SSL. Setup `ServerOptions.ssl_options` to turn on SSL. Refer to [ssl_options.h](https://github.com/brpc/brpc/blob/master/src/brpc/ssl_options.h) for more details.
+
+```c++
+// Certificate structure
+struct CertInfo {
+    // Certificate in PEM format.
+    // Note that CN and alt subjects will be extracted from the certificate,
+    // and will be used as hostnames. Requests to this hostname (provided SNI
+    // extension supported) will be encrypted using this certifcate.
+    // Supported both file path and raw string
+    std::string certificate;
+
+    // Private key in PEM format.
+    // Supported both file path and raw string based on prefix:
+    std::string private_key;
+
+    // Additional hostnames besides those inside the certificate. Wildcards
+    // are supported but it can only appear once at the beginning (i.e. *.xxx.com).
+    std::vector<std::string> sni_filters;
+};
+
+// SSL options at server side
+struct ServerSSLOptions {
+    // Default certificate which will be loaded into server. Requests
+    // without hostname or whose hostname doesn't have a corresponding
+    // certificate will use this certificate. MUST be set to enable SSL.
+    CertInfo default_cert;
+    
+    // Additional certificates which will be loaded into server. These
+    // provide extra bindings between hostnames and certificates so that
+    // we can choose different certificates according to different hostnames.
+    // See `CertInfo' for detail.
+    std::vector<CertInfo> certs;
+    
+    // When set, requests without hostname or whose hostname can't be found in
+    // any of the cerficates above will be dropped. Otherwise, `default_cert'
+    // will be used.
+    // Default: false
+    bool strict_sni;
+ 
+    // ... Other options
+};
+```
+
+- To turn on SSL, users **MUST** provide a `default_cert`. For dynamic certificate selection (i.e. based on request hostname, a.k.a [SNI](https://en.wikipedia.org/wiki/Server_Name_Indication)), `certs` should be used to store those dynamic certificates. Finally, users can add/remove those certificates when server's running:
+
+  ```c++
+  int AddCertificate(const CertInfo& cert);
+  int RemoveCertificate(const CertInfo& cert);
+  int ResetCertificates(const std::vector<CertInfo>& certs);
+  ```
+
+- Other options include: cipher suites (recommend using `ECDHE-RSA-AES256-GCM-SHA384` which is the default suite used by chrome, and one of the safest suites. The drawback is more CPU cost), session reuse and so on. 
+
+- SSL layer works under protocol layer. As a result, all protocols (such as HTTP)  can provide SSL access when it's turned on. Server will decrypt the data first and then pass it into each protocol.
+
+- After turning on SSL, non-SSL access is still available for the same port. Server can automatically distinguish SSL from non-SSL requests. SSL-only mode can be implemented using `Controller::is_ssl()` in service's callback and `SetFailed` if it returns false. In the meanwhile, the builtin-service [connections](../cn/connections.md) also shows the SSL information for each connection.
+
 ## Verify identities of clients
 
 The server needs to implement `Authenticator` to enable verifications:
@@ -520,9 +585,11 @@ In addition, when a server has stable latencies, limiting concurrency has simila
 
 ### Calculate max concurrency
 
-MaxConcurrency = PeakQPS * AverageLatency  ([little's law](https://en.wikipedia.org/wiki/Little%27s_law))
+max_concurrency = peak_qps * noload_latency  ([little's law](https://en.wikipedia.org/wiki/Little%27s_law))
 
-PeakQPS and AverageLatency are queries-per-second and latencies measured in a server being pushed to its limit provided that requests are not delayed severely (with an acceptable latency). Most services have performance tests before going online, multiplications of the two metrics calculates max concurrency of the service.
+peak_qps is the maximum of Queries-Per-Second.
+noload_latency is the average latency measured in a server without pushing to its limit(with an acceptable latency).
+peak_qps and nolaod_latency can be measured in pre-online performance tests and multiplied to calculate the max_concurrency.
 
 ### Limit server-level concurrency
 
@@ -545,6 +612,20 @@ The code is generally put **after AddService, before Start() of the server**. Wh
 When method-level and server-level max_concurrency are both set, framework checks server-level first, then the method-level one.
 
 NOTE: No service-level max_concurrency.
+
+### AutoConcurrencyLimiter
+max_concurrency may change over time and measuring and setting max_concurrency for all services before each deployment are probably very troublesome and impractical.
+
+AutoConcurrencyLimiter addresses on this issue by limiting concurrency for methods. To use the algorithm, set max_concurrency of the method to "auto".
+```c++
+// Set auto concurrency limiter for all methods
+brpc::ServerOptions options;
+options.method_max_concurrency = "auto";
+
+// Set auto concurrency limiter for specific method
+server.MaxConcurrencyOf("example.EchoService.Echo") = "auto";
+```
+Read [this](../cn/auto_concurrency_limiter.md) to know more about the algorithm.
 
 ## pthread mode
 
@@ -692,7 +773,7 @@ int main(int argc, char* argv[]) {
 
 A server-thread-local is bound to **a call to service's CallMethod**, from entering service's CallMethod, to leaving the method. All server-thread-local data are reused as much as possible and will not be deleted before stopping the server. server-thread-local is implemented as a special bthread-local.
 
-After setting ServerOptions.thread_local_data_factory, call Controller.thread_local_data() to get a thread-local. If ServerOptions.thread_local_data_factory is unset, Controller.thread_local_data() always returns NULL. 
+After setting ServerOptions.thread_local_data_factory, call brpc::thread_local_data() to get a thread-local. If ServerOptions.thread_local_data_factory is unset, brpc::thread_local_data() always returns NULL. 
 
 If ServerOptions.reserved_thread_local_data is greater than 0, Server creates so many data before serving.
 

@@ -233,8 +233,8 @@ void return_keytable(bthread_keytable_pool_t* pool, KeyTable* kt) {
     pool->free_keytables = kt;
 }
 
-static void cleanup_pthread() {
-    KeyTable* kt = tls_bls.keytable;
+static void cleanup_pthread(void* arg) {
+    KeyTable* kt = static_cast<KeyTable*>(arg);
     if (kt) {
         delete kt;
         // After deletion: tls may be set during deletion.
@@ -446,7 +446,7 @@ int bthread_setspecific(bthread_key_t key, void* data) {
         }
         if (!bthread::tls_ever_created_keytable) {
             bthread::tls_ever_created_keytable = true;
-            CHECK_EQ(0, butil::thread_atexit(bthread::cleanup_pthread));
+            CHECK_EQ(0, butil::thread_atexit(bthread::cleanup_pthread, kt));
         }
     }
     return kt->set_data(key, data);
@@ -472,10 +472,6 @@ void* bthread_getspecific(bthread_key_t key) {
 
 void bthread_assign_data(void* data) {
     bthread::tls_bls.assigned_data = data;
-    bthread::TaskGroup* const g = bthread::tls_task_group;
-    if (g) {
-        g->current_task()->local_storage.assigned_data = data;
-    }
 }
 
 void* bthread_get_assigned_data() {

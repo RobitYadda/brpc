@@ -20,7 +20,7 @@
 #ifndef BUTIL_LOGGING_H_
 #define BUTIL_LOGGING_H_
 
-#include <butil/config.h>   // BRPC_WITH_GLOG
+#include "butil/config.h"   // BRPC_WITH_GLOG
 
 #include <inttypes.h>
 #include <string>
@@ -53,6 +53,9 @@
 #  define DPCHECK(...) DCHECK(__VA_ARGS__)
 #  define DVPLOG(...) DVLOG(__VA_ARGS__)
 # endif
+
+#define LOG_AT(severity, file, line)                                    \
+    google::LogMessage(file, line, google::severity).stream()
 
 #else
 

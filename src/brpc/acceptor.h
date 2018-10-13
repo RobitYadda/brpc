@@ -18,6 +18,7 @@
 #ifndef BRPC_ACCEPTOR_H
 #define BRPC_ACCEPTOR_H
 
+#include "bthread/bthread.h"                       // bthread_t
 #include "butil/synchronization/condition_variable.h"
 #include "butil/containers/flat_map.h"
 #include "brpc/input_messenger.h"
@@ -52,7 +53,8 @@ public:
     // transmission for `idle_timeout_sec' will be closed automatically iff
     // `idle_timeout_sec' > 0
     // Return 0 on success, -1 otherwise.
-    int StartAccept(int listened_fd, int idle_timeout_sec, SSL_CTX* ssl_ctx);
+    int StartAccept(int listened_fd, int idle_timeout_sec,
+                    const std::shared_ptr<SocketSSLContext>& ssl_ctx);
 
     // [thread-safe] Stop accepting connections.
     // `closewait_ms' is not used anymore.
@@ -103,8 +105,7 @@ private:
     // The map containing all the accepted sockets
     SocketMap _socket_map;
 
-    // Not owner
-    SSL_CTX* _ssl_ctx;
+    std::shared_ptr<SocketSSLContext> _ssl_ctx;
 };
 
 } // namespace brpc

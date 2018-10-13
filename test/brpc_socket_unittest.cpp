@@ -19,6 +19,9 @@
 #include "brpc/policy/hulu_pbrpc_protocol.h"
 #include "brpc/policy/most_common_message.h"
 #include "brpc/nshead.h"
+#if defined(OS_MACOSX)
+#include <sys/event.h>
+#endif
 
 #define CONNECT_IN_KEEPWRITE 1;
 
@@ -280,7 +283,6 @@ public:
     }
     void StopConnect(brpc::Socket*) {
         LOG(INFO) << "Stop application-level connect";
-        delete this;
     }
     void MakeConnectDone() {
         _done(0, _data);
@@ -310,7 +312,7 @@ TEST_F(SocketTest, single_threaded_connect_and_write) {
     brpc::SocketId id = 8888;
     brpc::SocketOptions options;
     options.remote_side = point;
-    MyConnect* my_connect = new MyConnect;
+    std::shared_ptr<MyConnect> my_connect = std::make_shared<MyConnect>();
     options.app_connect = my_connect;
     options.user = new CheckRecycle;
     ASSERT_EQ(0, brpc::Socket::Create(options, &id));
@@ -361,7 +363,11 @@ TEST_F(SocketTest, single_threaded_connect_and_write) {
                 bthread_usleep(1000);
                 ASSERT_LT(butil::gettimeofday_us(), start_time + 1000000L) << "Too long!";
             }
+#if defined(OS_LINUX)
             ASSERT_EQ(0, bthread_fd_wait(s->fd(), EPOLLIN));
+#elif defined(OS_MACOSX)
+            ASSERT_EQ(0, bthread_fd_wait(s->fd(), EVFILT_READ));
+#endif
             char dest[sizeof(buf)];
             ASSERT_EQ(meta_len + len, (size_t)read(s->fd(), dest, sizeof(dest)));
             ASSERT_EQ(0, memcmp(buf + 12, dest, meta_len + len));
@@ -496,7 +502,7 @@ TEST_F(SocketTest, not_health_check_when_nref_hits_0) {
         ASSERT_EQ(wait_id.value, data.id.value);
         ASSERT_EQ(ECONNREFUSED, data.error_code);
         ASSERT_TRUE(butil::StringPiece(data.error_text).starts_with(
-                        "Fail to connect SocketId="));
+                        "Fail to connect "));
 #else
         ASSERT_EQ(-1, s->Write(&src));
         ASSERT_EQ(ECONNREFUSED, errno);
@@ -576,7 +582,7 @@ TEST_F(SocketTest, health_check) {
     ASSERT_EQ(wait_id.value, data.id.value);
     ASSERT_EQ(ECONNREFUSED, data.error_code);
     ASSERT_TRUE(butil::StringPiece(data.error_text).starts_with(
-                    "Fail to connect SocketId="));
+                    "Fail to connect "));
     if (use_my_message) {
         ASSERT_TRUE(appended_msg);
     }

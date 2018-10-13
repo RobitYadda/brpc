@@ -1,17 +1,28 @@
 [中文版](../cn/http_service.md)
 
-This document talks about ordinary HTTP services rather than protobuf services accessible via HTTP. HTTP services in brpc have to declare interfaces with empty request and response in a .proto file. This requirement keeps all service declarations inside proto files rather than scattering in code, configurations, and proto files. Check [http_server.cpp](https://github.com/brpc/brpc/blob/master/example/http_c++/http_server.cpp) for an example.
+This document talks about ordinary htt/h2 services rather than protobuf services accessible via http/h2. 
+http/h2 services in brpc have to declare interfaces with empty request and response in a .proto file. This requirement keeps all service declarations inside proto files rather than scattering in code, configurations, and proto files.
+
+# Example
+
+[http_server.cpp](https://github.com/brpc/brpc/blob/master/example/http_c++/http_server.cpp)
+
+# About h2
+
+brpc names the HTTP/2 protocol to "h2", no matter encrypted or not. However HTTP/2 connections without SSL are shown on /connections with the official name "h2c", and the ones with SSL are shown as "h2".
+
+The APIs for http and h2 in brpc are basically same. Without explicit statement, mentioned http features work for h2 as well.
 
 # URL types
 
 ## /ServiceName/MethodName as the prefix
 
-Define a service named `ServiceName`(not including the package name), with a method named `MethodName` and empty request/response, the service will provide http service on `/ServiceName/MethodName` by default.
+Define a service named `ServiceName`(not including the package name), with a method named `MethodName` and empty request/response, the service will provide http/h2 service on `/ServiceName/MethodName` by default.
 
-The reason that request and response can be empty is that the HTTP data is in Controller:
+The reason that request and response can be empty is that all data are in Controller:
 
-- Header of the http request is in Controller.http_request() and the body is in Controller.request_attachment().
-- Header of the http response is in Controller.http_response() and the body is in Controller.response_attachment().
+- Header of the http/h2 request is in Controller.http_request() and the body is in Controller.request_attachment().
+- Header of the http/h2 response is in Controller.http_response() and the body is in Controller.response_attachment().
 
 Implementation steps:
 
@@ -69,7 +80,7 @@ public:
 
 ## /ServiceName as the prefix
 
-HTTP services to manage resources may need this kind of URL, such as `/FileService/foobar.txt` represents `./foobar.txt` and `/FileService/app/data/boot.cfg` represents `./app/data/boot.cfg`.
+http/h2 services for managing resources may need this kind of URL, such as `/FileService/foobar.txt` represents `./foobar.txt` and `/FileService/app/data/boot.cfg` represents `./app/data/boot.cfg`.
 
 Implementation steps:
 
@@ -121,13 +132,13 @@ brpc supports specifying a URL for each method in a service. The API is as follo
 // If `restful_mappings' is non-empty, the method in service can
 // be accessed by the specified URL rather than /ServiceName/MethodName.
 // Mapping rules: "PATH1 => NAME1, PATH2 => NAME2 ..."
-// where `PATH' is a valid HTTP path and `NAME' is the method name.
+// where `PATH' is a valid path and `NAME' is the method name.
 int AddService(google::protobuf::Service* service,
                ServiceOwnership ownership,
                butil::StringPiece restful_mappings);
 ```
 
-`QueueService` defined below contains several HTTP methods. If the service is added into the server normally, it's accessible via URLs like `/QueueService/start` and ` /QueueService/stop`.
+`QueueService` defined below contains several methods. If the service is added into the server normally, it's accessible via URLs like `/QueueService/start` and ` /QueueService/stop`.
 
 ```protobuf
 service QueueService {
@@ -165,7 +176,7 @@ There are 3 mappings separated by comma in the 3rd parameter (which is a string 
 More about mapping rules:
 
 - Multiple paths can be mapped to a same method.
-- Both HTTP and protobuf services are supported.
+- Both http/h2 and protobuf services are supported.
 - Un-mapped methods are still accessible via `/ServiceName/MethodName`. Mapped methods are **not** accessible via `/ServiceName/MethodName` anymore.
 - `==>` and ` ===>` are both OK, namely extra spaces at the beginning or the end, extra slashes, extra commas at the end, are all accepted.
 - Pattern `PATH` and `PATH/*` can coexist.
@@ -272,7 +283,7 @@ cntl->http_request().uri().SetQuery("time", "2015/1/2");
 
 # Debugging
 
-Turn on [-http_verbose](http://brpc.baidu.com:8765/flags/http_verbose) to print contents of all http requests and responses to stderr. Note that this should only be used for debugging rather than online services.
+Turn on [-http_verbose](http://brpc.baidu.com:8765/flags/http_verbose) to print contents of all http requests and responses. Note that this should only be used for debugging rather than online services.
 
 # Compress the response body
 
@@ -307,53 +318,8 @@ if (encoding != NULL && *encoding == "gzip") {
 // cntl->request_attachment() contains the data after decompression
 ```
 
-# Turn on HTTPS
-
-Update openssl to the latest version before turning on HTTPS, since older versions of openssl may have severe security problems and support less encryption algorithms, which is against with the purpose of using SSL. Setup `ServerOptions.ssl_options` to turn on HTTPS.
-
-```c++
-// Certificate structure
-struct CertInfo {
-    // Certificate in PEM format.
-    // Note that CN and alt subjects will be extracted from the certificate,
-    // and will be used as hostnames. Requests to this hostname (provided SNI
-    // extension supported) will be encrypted using this certifcate.
-    // Supported both file path and raw string
-    std::string certificate;
-
-    // Private key in PEM format.
-    // Supported both file path and raw string based on prefix:
-    std::string private_key;
-
-    // Additional hostnames besides those inside the certificate. Wildcards
-    // are supported but it can only appear once at the beginning (i.e. *.xxx.com).
-    std::vector<std::string> sni_filters;
-};
-
-struct SSLOptions {
-    // Default certificate which will be loaded into server. Requests
-    // without hostname or whose hostname doesn't have a corresponding
-    // certificate will use this certificate. MUST be set to enable SSL.
-    CertInfo default_cert;
-
-    // Additional certificates which will be loaded into server. These
-    // provide extra bindings between hostnames and certificates so that
-    // we can choose different certificates according to different hostnames.
-    // See `CertInfo' for detail.
-    std::vector<CertInfo> certs;
-
-    // When set, requests without hostname or whose hostname can't be found in
-    // any of the cerficates above will be dropped. Otherwise, `default_cert'
-    // will be used.
-    // Default: false
-    bool strict_sni;
- 
-    // ... Other options
-};
-```
-Other options include: cipher suites (recommend using `ECDHE-RSA-AES256-GCM-SHA384` which is the default suite used by chrome, and one of the safest suites. The drawback is more CPU cost), session reuse and so on. Read [server.h](https://github.com/brpc/brpc/blob/master/src/brpc/server.h) for more information.
-
-After turning on HTTPS, the service is still accessible by HTTP from the same port. The server identifies whether the request is HTTP or HTTPS automatically, and tell the result to users by `Controller::is_ssl()`. As you can see, the HTTPS in brpc is more like supporting an additional protocol, rather than providing an encrypted communication channel.
+# Serve https requests
+https is short for "http over SSL", SSL is not exclusive for http, but effective for all protocols. The generic method for turning on server-side SSL is [here](server.md#turn-on-ssl).
 
 # Performance
 

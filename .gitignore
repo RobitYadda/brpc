@@ -11,6 +11,8 @@
 *.pb.h
 *.prof
 *.so
+*.dylib
+*.rej
 /output
 /test/output
 
@@ -32,3 +34,4 @@ install_manifest.txt
 compile_commands.json
 CTestTestfile.cmake
 build/
+/cmake-build-debug/

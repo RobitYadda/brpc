@@ -2227,6 +2227,25 @@ bool RtmpChunkStream::OnDataMessageAMF0(
         }
         stream->CallOnMetaData(&metadata, name);
         return true;
+    } else if (name == RTMP_AMF0_ON_CUE_POINT) {
+        if (istream.check_emptiness()) {
+            return false;
+        }
+        RtmpCuePoint cuepoint;
+        cuepoint.timestamp = mh.timestamp;
+        if (!ReadAMFObject(&cuepoint.data, &istream)) {
+            RTMP_ERROR(socket, mh) << "Fail to read cuepoint";
+            return false;
+        }
+        // TODO: execq?
+        butil::intrusive_ptr<RtmpStreamBase> stream;
+        if (!connection_context()->FindMessageStream(mh.stream_id, &stream)) {
+            LOG_EVERY_SECOND(WARNING) << socket->remote_side()
+                                      << ": Fail to find stream_id=" << mh.stream_id;
+            return false;
+        }
+        stream->CallOnCuePoint(&cuepoint);
+        return true;
     } else if (name == RTMP_AMF0_DATA_SAMPLE_ACCESS) {
         return true;
     } else if (name == RTMP_AMF0_COMMAND_ON_STATUS) {
@@ -3505,8 +3524,8 @@ void OnServerStreamCreated::Run(bool error,
             break;
         }
         _stream->_message_stream_id = stream_id;
-        // client stream needs to be added here rather than OnStreamCreationDone
-        // to avoid the race between OnStreamCreationDone and a failed OnStatus,
+        // client stream needs to be added here rather than OnDestroyingStream
+        // to avoid the race between OnDestroyingStream and a failed OnStatus,
         // because the former function runs in another bthread and may run later
         // than OnStatus which needs to see the stream.
         if (!ctx->AddClientStream(_stream.get())) {

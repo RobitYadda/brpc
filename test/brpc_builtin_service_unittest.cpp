@@ -219,7 +219,7 @@ protected:
         EXPECT_FALSE(cntl.Failed());
         EXPECT_EQ(expect_type, cntl.http_response().content_type());
         CheckContent(cntl, buf);
-        CheckFieldInContent(cntl, "channel_socket_count: ", 0);
+        CheckFieldInContent(cntl, "channel_connection_count: ", 0);
 
         close(cfd);
         StopAndJoin();
@@ -695,7 +695,11 @@ TEST_F(BuiltinServiceTest, dir) {
         cntl.http_request()._unresolved_path = "/usr/include/errno.h";
         service.default_method(&cntl, &req, &res, &done);
         EXPECT_FALSE(cntl.Failed());
+#if defined(OS_LINUX)
         CheckContent(cntl, "ERRNO_H");
+#elif defined(OS_MACOSX)
+        CheckContent(cntl, "sys/errno.h");
+#endif
     }
     {
         // Open a file that doesn't exist

@@ -55,6 +55,9 @@ const bool ALLOW_UNUSED dummy_show_per_worker_usage_in_vars =
                                     pass_bool);
 
 __thread TaskGroup* tls_task_group = NULL;
+// Sync with TaskMeta::local_storage when a bthread is created or destroyed.
+// During running, the two fields may be inconsistent, use tls_bls as the
+// groundtruth.
 __thread LocalStorage tls_bls = BTHREAD_LOCAL_STORAGE_INITIALIZER;
 
 // defined in bthread/key.cpp
@@ -113,7 +116,7 @@ bool TaskGroup::wait_task(bthread_t* tid) {
     do {
 #ifndef BTHREAD_DONT_SAVE_PARKING_STATE
         if (_last_pl_state.stopped()) {
-            return -1;
+            return false;
         }
         _pl->wait(_last_pl_state);
         if (steal_task(tid)) {
@@ -122,7 +125,7 @@ bool TaskGroup::wait_task(bthread_t* tid) {
 #else
         const ParkingLot::State st = _pl->get_state();
         if (st.stopped()) {
-            return -1;
+            return false;
         }
         if (steal_task(tid)) {
             return true;
@@ -229,14 +232,7 @@ int TaskGroup::init(size_t runqueue_capacity) {
     m->about_to_quit = false;
     m->fn = NULL;
     m->arg = NULL;
-    // In current implementation, even if we set m->local_storage to empty,
-    // everything should be fine because a non-worker pthread never context
-    // switches to a bthread, inconsistency between m->local_storage and tls_bls
-    // does not result in bug. However to avoid potential future bug,
-    // TaskMeta.local_storage is better to be sync with tls_bls otherwise
-    // context switching back to this main bthread will restore tls_bls
-    // with NULL values which is incorrect.
-    m->local_storage = tls_bls;
+    m->local_storage = LOCAL_STORAGE_INIT;
     m->cpuwide_start_ns = butil::cpuwide_time_ns();
     m->stat = EMPTY_STAT;
     m->attr = BTHREAD_ATTR_TASKGROUP;
@@ -316,12 +312,12 @@ void TaskGroup::task_runner(intptr_t skip_remained) {
         // Clean tls variables, must be done before changing version_butex
         // otherwise another thread just joined this thread may not see side
         // effects of destructing tls variables.
-        KeyTable* kt = m->local_storage.keytable;
+        KeyTable* kt = tls_bls.keytable;
         if (kt != NULL) {
             return_keytable(m->attr.keytable_pool, kt);
             // After deletion: tls may be set during deletion.
-            m->local_storage.keytable = NULL;
             tls_bls.keytable = NULL;
+            m->local_storage.keytable = NULL; // optional
         }
         
         // Increase the version and wake up all joiners, if resulting version
@@ -588,6 +584,8 @@ void TaskGroup::sched_to(TaskGroup** pg, TaskMeta* next_meta) {
     // Switch to the task
     if (__builtin_expect(next_meta != cur_meta, 1)) {
         g->_cur_meta = next_meta;
+        // Switch tls_bls
+        cur_meta->local_storage = tls_bls;
         tls_bls = next_meta->local_storage;
 
         // Logging must be done after switching the local storage, since the logging lib 

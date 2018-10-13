@@ -37,9 +37,12 @@
 #include "brpc/global.h"
 #include "brpc/socket_map.h"                   // SocketMapList
 #include "brpc/acceptor.h"                     // Acceptor
-#include "brpc/details/ssl_helper.h"           // CreateSSLContext
+#include "brpc/details/ssl_helper.h"           // CreateServerSSLContext
 #include "brpc/protocol.h"                     // ListProtocols
 #include "brpc/nshead_service.h"               // NsheadService
+#ifdef ENABLE_THRIFT_FRAMED_PROTOCOL
+#include "brpc/thrift_service.h"               // ThriftService
+#endif
 #include "brpc/builtin/bad_method_service.h"   // BadMethodService
 #include "brpc/builtin/get_favicon_service.h"
 #include "brpc/builtin/get_js_service.h"
@@ -116,17 +119,10 @@ const int INITIAL_CERT_MAP = 64;
 // compilation units is undefined.
 const int s_ncore = sysconf(_SC_NPROCESSORS_ONLN);
 
-SSLOptions::SSLOptions()
-    : strict_sni(false)
-    , disable_ssl3(true)
-    , session_lifetime_s(300)
-    , session_cache_size(20480)
-    , ecdhe_curve_name("prime256v1")
-{}
-
 ServerOptions::ServerOptions()
     : idle_timeout_sec(-1)
     , nshead_service(NULL)
+    , thrift_service(NULL)
     , mongo_service_adaptor(NULL)
     , auth(NULL)
     , server_owns_auth(false)
@@ -147,6 +143,13 @@ ServerOptions::ServerOptions()
     if (s_ncore > 0) {
         num_threads = s_ncore + 1;
     }
+}
+
+ServerSSLOptions* ServerOptions::mutable_ssl_options() {
+    if (!_ssl_options) {
+        _ssl_options.reset(new ServerSSLOptions);
+    }
+    return _ssl_options.get();
 }
 
 Server::MethodProperty::OpaqueParams::OpaqueParams()
@@ -276,7 +279,7 @@ void* Server::UpdateDerivedVars(void* arg) {
     std::vector<SocketId> conns;
     std::vector<SocketId> internal_conns;
     
-    server->_nerror.expose_as(prefix, "error");
+    server->_nerror_bvar.expose_as(prefix, "error");
 
     bvar::PassiveStatus<timeval> uptime_st(
         prefix, "uptime", GetUptime, (void*)(intptr_t)start_us);
@@ -314,6 +317,12 @@ void* Server::UpdateDerivedVars(void* arg) {
     if (server->options().nshead_service) {
         server->options().nshead_service->Expose(prefix);
     }
+
+#ifdef ENABLE_THRIFT_FRAMED_PROTOCOL
+    if (server->options().thrift_service) {
+        server->options().thrift_service->Expose(prefix);
+    }
+#endif
 
     int64_t last_time = butil::gettimeofday_us();
     int consecutive_nosleep = 0;
@@ -381,8 +390,8 @@ Server::Server(ProfilerLinker)
     , _derivative_thread(INVALID_BTHREAD)
     , _keytable_pool(NULL)
     , _concurrency(0) {
-    BAIDU_CASSERT(offsetof(Server, _concurrency) % 64 == 0,
-              Server_concurrency_must_be_aligned_by_cacheline);
+    BAIDU_CASSERT(offsetof(Server, _concurrency) % 64 == 0,	
+                  Server_concurrency_must_be_aligned_by_cacheline);
 }
 
 Server::~Server() {
@@ -396,6 +405,11 @@ Server::~Server() {
 
     delete _options.nshead_service;
     _options.nshead_service = NULL;
+
+#ifdef ENABLE_THRIFT_FRAMED_PROTOCOL
+    delete _options.thrift_service;
+    _options.thrift_service = NULL;
+#endif
 
     delete _options.http_master_service;
     _options.http_master_service = NULL;
@@ -521,9 +535,7 @@ bool is_http_protocol(const char* name) {
     if (name[0] != 'h') {
         return false;
     }
-    return strcmp(name, "http") == 0 ||
-        strcmp(name, "h2c") == 0 ||
-        strcmp(name, "h2") == 0;
+    return strcmp(name, "http") == 0 || strcmp(name, "h2") == 0;
 }
 
 Acceptor* Server::BuildAcceptor() {
@@ -655,6 +667,29 @@ static int get_port_from_fd(int fd) {
     return ntohs(addr.sin_port);
 }
 
+static bool CreateConcurrencyLimiter(const AdaptiveMaxConcurrency& amc,
+                                     ConcurrencyLimiter** out) {
+    if (amc.type() == AdaptiveMaxConcurrency::UNLIMITED()) {
+        *out = NULL;
+        return true;
+    }
+    const ConcurrencyLimiter* cl =
+        ConcurrencyLimiterExtension()->Find(amc.type().c_str());
+    if (cl == NULL) {
+        LOG(ERROR) << "Fail to find ConcurrencyLimiter by `" << amc.value() << "'";
+        return false;
+    }
+    ConcurrencyLimiter* cl_copy = cl->New(amc);
+    if (cl_copy == NULL) {
+        LOG(ERROR) << "Fail to new ConcurrencyLimiter";
+        return false;
+    }
+    *out = cl_copy;
+    return true;
+}
+
+static AdaptiveMaxConcurrency g_default_max_concurrency_of_method = 0;
+
 int Server::StartInternal(const butil::ip_t& ip,
                           const PortRange& port_range,
                           const ServerOptions *opt) {
@@ -686,6 +721,11 @@ int Server::StartInternal(const butil::ip_t& ip,
         // Always reset to default options explicitly since `_options'
         // may be the options for the last run or even bad options
         _options = ServerOptions();
+    }
+
+    if (!_options.h2_settings.IsValid(true/*log_error*/)) {
+        LOG(ERROR) << "Invalid h2_settings";
+        return -1;
     }
 
     if (_options.http_master_service) {
@@ -810,23 +850,27 @@ int Server::StartInternal(const butil::ip_t& ip,
 
     // Free last SSL contexts
     FreeSSLContexts();
-    CertInfo& default_cert = _options.ssl_options.default_cert;
-    if (!default_cert.certificate.empty()) {
+    if (_options.has_ssl_options()) {
+        CertInfo& default_cert = _options.mutable_ssl_options()->default_cert;
+        if (default_cert.certificate.empty()) {
+            LOG(ERROR) << "default_cert is empty";
+            return -1;
+        }
         if (AddCertificate(default_cert) != 0) {
             return -1;
         }
         _default_ssl_ctx = _ssl_ctx_map.begin()->second.ctx;
 
-        const std::vector<CertInfo>& certs = _options.ssl_options.certs;
+        const std::vector<CertInfo>& certs = _options.mutable_ssl_options()->certs;
         for (size_t i = 0; i < certs.size(); ++i) {
             if (AddCertificate(certs[i]) != 0) {
                 return -1;
             }
         }
     }
-    
-    _concurrency = 0;
 
+    _concurrency = 0;
+    
     if (_options.has_builtin_services &&
         _builtin_service_count <= 0 &&
         AddBuiltinServices() != 0) {
@@ -863,6 +907,24 @@ int Server::StartInternal(const butil::ip_t& ip,
         bthread_setconcurrency(_options.num_threads);
     }
 
+    for (MethodMap::iterator it = _method_map.begin();
+        it != _method_map.end(); ++it) {
+        if (it->second.is_builtin_service) {
+            it->second.status->SetConcurrencyLimiter(NULL);
+        } else {
+            const AdaptiveMaxConcurrency* amc = &it->second.max_concurrency;
+            if (amc->type() == AdaptiveMaxConcurrency::UNLIMITED()) {
+                amc = &_options.method_max_concurrency;
+            }
+            ConcurrencyLimiter* cl = NULL;
+            if (!CreateConcurrencyLimiter(*amc, &cl)) {
+                LOG(ERROR) << "Fail to create ConcurrencyLimiter for method";
+                return -1;
+            }
+            it->second.status->SetConcurrencyLimiter(cl);
+        }
+    }
+    
     // Create listening ports
     if (port_range.min_port > port_range.max_port) {
         LOG(ERROR) << "Invalid port_range=[" << port_range.min_port << '-'
@@ -1022,9 +1084,6 @@ int Server::Start(const char* ip_str, PortRange port_range,
 }
 
 int Server::Stop(int timeout_ms) {
-    if (_status != RUNNING) {
-        return -1;
-    }
     if (_status != RUNNING) {
         return -1;
     }
@@ -1368,7 +1427,10 @@ void Server::RemoveMethodsOf(google::protobuf::Service* service) {
             full_name_wo_ns.append(md->name());
             _method_map.erase(full_name_wo_ns);
         }
-
+        if (mp == NULL) {
+            LOG(ERROR) << "Fail to find method=" << md->full_name();
+            continue;
+        }
         if (mp->http_url) {
             butil::StringSplitter at_sp(mp->http_url->c_str(), '@');
             for (; at_sp; ++at_sp) {
@@ -1404,7 +1466,7 @@ void Server::RemoveMethodsOf(google::protobuf::Service* service) {
             delete mp->http_url;
         }
 
-        if (mp != NULL && mp->own_method_status) {
+        if (mp->own_method_status) {
             delete mp->status;
         }
         _method_map.erase(md->full_name());
@@ -1519,7 +1581,7 @@ void Server::GenerateVersionIfNeeded() {
     if (!_version.empty()) {
         return;
     }
-    int extra_count = !!_options.nshead_service + !!_options.rtmp_service;
+    int extra_count = !!_options.nshead_service + !!_options.rtmp_service + !!_options.thrift_service;
     _version.reserve((extra_count + service_count()) * 20);
     for (ServiceMap::const_iterator it = _fullname_service_map.begin();
          it != _fullname_service_map.end(); ++it) {
@@ -1536,6 +1598,16 @@ void Server::GenerateVersionIfNeeded() {
         }
         _version.append(butil::class_name_str(*_options.nshead_service));
     }
+
+#ifdef ENABLE_THRIFT_FRAMED_PROTOCOL
+    if (_options.thrift_service) {
+        if (!_version.empty()) {
+            _version.push_back('+');
+        }
+        _version.append(butil::class_name_str(*_options.thrift_service));
+    }
+#endif
+
     if (_options.rtmp_service) {
         if (!_version.empty()) {
             _version.push_back('+');
@@ -1571,7 +1643,11 @@ void Server::PutPidFileIfNeeded() {
         std::string dir_name =_options.pid_file.substr(0, pos + 1);
         int rc = mkdir(dir_name.c_str(), 
                        S_IFDIR | S_IRUSR | S_IWUSR | S_IXUSR | S_IRGRP);
-        if (rc != 0 && errno != EEXIST) {
+        if (rc != 0 && errno != EEXIST
+#if defined(OS_MACOSX)
+        && errno != EISDIR
+#endif
+        ) {
             PLOG(WARNING) << "Fail to create " << dir_name;
             _options.pid_file.clear();
             return;
@@ -1729,6 +1805,10 @@ Server::FindServicePropertyByName(const butil::StringPiece& name) const {
 }
 
 int Server::AddCertificate(const CertInfo& cert) {
+    if (!_options.has_ssl_options()) {
+        LOG(ERROR) << "ServerOptions.ssl_options is not configured yet";
+        return -1;
+    }
     std::string cert_key(cert.certificate);
     cert_key.append(cert.private_key);
     if (_ssl_ctx_map.seek(cert_key) != NULL) {
@@ -1738,15 +1818,17 @@ int Server::AddCertificate(const CertInfo& cert) {
 
     SSLContext ssl_ctx;
     ssl_ctx.filters = cert.sni_filters;
-    ssl_ctx.ctx = CreateSSLContext(cert.certificate, cert.private_key,
-                                   _options.ssl_options, &ssl_ctx.filters);
-    if (ssl_ctx.ctx == NULL) {
+    ssl_ctx.ctx = std::make_shared<SocketSSLContext>();
+    SSL_CTX* raw_ctx = CreateServerSSLContext(cert.certificate, cert.private_key,
+                                              _options.ssl_options(), &ssl_ctx.filters);
+    if (raw_ctx == NULL) {
         return -1;
     }
-    
+    ssl_ctx.ctx->raw_ctx = raw_ctx;
+
 #ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
-    SSL_CTX_set_tlsext_servername_callback(ssl_ctx.ctx, SSLSwitchCTXByHostname);
-    SSL_CTX_set_tlsext_servername_arg(ssl_ctx.ctx, this);
+    SSL_CTX_set_tlsext_servername_callback(ssl_ctx.ctx->raw_ctx, SSLSwitchCTXByHostname);
+    SSL_CTX_set_tlsext_servername_arg(ssl_ctx.ctx->raw_ctx, this);
 #endif
             
     if (!_reload_cert_maps.Modify(AddCertMapping, ssl_ctx)) {
@@ -1788,6 +1870,10 @@ bool Server::AddCertMapping(CertMaps& bg, const SSLContext& ssl_ctx) {
 }
 
 int Server::RemoveCertificate(const CertInfo& cert) {
+    if (!_options.has_ssl_options()) {
+        LOG(ERROR) << "ServerOptions.ssl_options is not configured yet";
+        return -1;
+    }
     std::string cert_key(cert.certificate);
     cert_key.append(cert.private_key);
     SSLContext* ssl_ctx = _ssl_ctx_map.seek(cert_key);
@@ -1806,8 +1892,6 @@ int Server::RemoveCertificate(const CertInfo& cert) {
         return -1;
     }
     
-    // After a successful Modify, now it's safe to erase SSLContext
-    SSL_CTX_free(ssl_ctx->ctx);
     _ssl_ctx_map.erase(cert_key);
     return 0;
 }
@@ -1822,7 +1906,7 @@ bool Server::RemoveCertMapping(CertMaps& bg, const SSLContext& ssl_ctx) {
         } else {
             cmap = &(bg.cert_map);
         }
-        SSL_CTX** ctx = cmap->seek(hostname);
+        std::shared_ptr<SocketSSLContext>* ctx = cmap->seek(hostname);
         if (ctx != NULL && *ctx == ssl_ctx.ctx) {
             cmap->erase(hostname);
         }
@@ -1831,6 +1915,11 @@ bool Server::RemoveCertMapping(CertMaps& bg, const SSLContext& ssl_ctx) {
 }
 
 int Server::ResetCertificates(const std::vector<CertInfo>& certs) {
+    if (!_options.has_ssl_options()) {
+        LOG(ERROR) << "ServerOptions.ssl_options is not configured yet";
+        return -1;
+    }
+
     SSLContextMap tmp_map;
     if (tmp_map.init(INITIAL_CERT_MAP) != 0) {
         LOG(ERROR) << "Fail to initialize tmp_map";
@@ -1839,8 +1928,8 @@ int Server::ResetCertificates(const std::vector<CertInfo>& certs) {
 
     // Add default certficiate into tmp_map first since it can't be reloaded 
     std::string default_cert_key =
-            _options.ssl_options.default_cert.certificate
-            + _options.ssl_options.default_cert.private_key;
+        _options.ssl_options().default_cert.certificate
+        + _options.ssl_options().default_cert.private_key;
     tmp_map[default_cert_key] = _ssl_ctx_map[default_cert_key];
 
     for (size_t i = 0; i < certs.size(); ++i) {
@@ -1853,28 +1942,26 @@ int Server::ResetCertificates(const std::vector<CertInfo>& certs) {
 
         SSLContext ssl_ctx;
         ssl_ctx.filters = certs[i].sni_filters;
-        ssl_ctx.ctx = CreateSSLContext(
+        ssl_ctx.ctx = std::make_shared<SocketSSLContext>();
+        ssl_ctx.ctx->raw_ctx = CreateServerSSLContext(
             certs[i].certificate, certs[i].private_key,
-            _options.ssl_options, &ssl_ctx.filters);
-        if (ssl_ctx.ctx == NULL) {
-            FreeSSLContextMap(tmp_map, true);
+            _options.ssl_options(), &ssl_ctx.filters);
+        if (ssl_ctx.ctx->raw_ctx == NULL) {
             return -1;
         }
     
 #ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
-        SSL_CTX_set_tlsext_servername_callback(ssl_ctx.ctx, SSLSwitchCTXByHostname);
-        SSL_CTX_set_tlsext_servername_arg(ssl_ctx.ctx, this);
+        SSL_CTX_set_tlsext_servername_callback(ssl_ctx.ctx->raw_ctx, SSLSwitchCTXByHostname);
+        SSL_CTX_set_tlsext_servername_arg(ssl_ctx.ctx->raw_ctx, this);
 #endif
         tmp_map[cert_key] = ssl_ctx;
     }
 
     if (!_reload_cert_maps.Modify(ResetCertMappings, tmp_map)) {
-        FreeSSLContextMap(tmp_map, true);
         return -1;
     }
 
     _ssl_ctx_map.swap(tmp_map);
-    FreeSSLContextMap(tmp_map, true);
     return 0;
 }
 
@@ -1914,19 +2001,8 @@ bool Server::ResetCertMappings(CertMaps& bg, const SSLContextMap& ctx_map) {
     return true;
 }
 
-void Server::FreeSSLContextMap(SSLContextMap& ctx_map, bool keep_default) {
-    for (SSLContextMap::iterator it =
-                 ctx_map.begin(); it != ctx_map.end(); ++it) {
-        if (keep_default && it->second.ctx == _default_ssl_ctx) {
-            continue;
-        }
-        SSL_CTX_free(it->second.ctx);
-    }
-    ctx_map.clear();
-}
-
 void Server::FreeSSLContexts() {
-    FreeSSLContextMap(_ssl_ctx_map, false);
+    _ssl_ctx_map.clear();
     _reload_cert_maps.Modify(ClearCertMapping);
     _default_ssl_ctx = NULL;
 }
@@ -1947,26 +2023,32 @@ int Server::ResetMaxConcurrency(int max_concurrency) {
     return 0;
 }
 
-static int g_default_max_concurrency_of_method = 0;
-
-int& Server::MaxConcurrencyOf(MethodProperty* mp) {
+AdaptiveMaxConcurrency& Server::MaxConcurrencyOf(MethodProperty* mp) {
+    if (IsRunning()) {
+        LOG(WARNING) << "MaxConcurrencyOf is only allowd before Server started";
+        return g_default_max_concurrency_of_method;
+    }
     if (mp->status == NULL) {
         LOG(ERROR) << "method=" << mp->method->full_name()
                    << " does not support max_concurrency";
         _failed_to_set_max_concurrency_of_method = true;
         return g_default_max_concurrency_of_method;
     }
-    return mp->status->max_concurrency();
+    return mp->max_concurrency;
 }
 
 int Server::MaxConcurrencyOf(const MethodProperty* mp) const {
+    if (IsRunning()) {
+        LOG(WARNING) << "MaxConcurrencyOf is only allowd before Server started";
+        return g_default_max_concurrency_of_method;
+    }
     if (mp == NULL || mp->status == NULL) {
         return 0;
     }
-    return mp->status->max_concurrency();
+    return mp->max_concurrency;
 }
 
-int& Server::MaxConcurrencyOf(const butil::StringPiece& full_method_name) {
+AdaptiveMaxConcurrency& Server::MaxConcurrencyOf(const butil::StringPiece& full_method_name) {
     MethodProperty* mp = _method_map.seek(full_method_name);
     if (mp == NULL) {
         LOG(ERROR) << "Fail to find method=" << full_method_name;
@@ -1980,7 +2062,7 @@ int Server::MaxConcurrencyOf(const butil::StringPiece& full_method_name) const {
     return MaxConcurrencyOf(_method_map.seek(full_method_name));
 }
 
-int& Server::MaxConcurrencyOf(const butil::StringPiece& full_service_name,
+AdaptiveMaxConcurrency& Server::MaxConcurrencyOf(const butil::StringPiece& full_service_name,
                               const butil::StringPiece& method_name) {
     MethodProperty* mp = const_cast<MethodProperty*>(
         FindMethodPropertyByFullName(full_service_name, method_name));
@@ -1999,7 +2081,7 @@ int Server::MaxConcurrencyOf(const butil::StringPiece& full_service_name,
                                 full_service_name, method_name));
 }
 
-int& Server::MaxConcurrencyOf(google::protobuf::Service* service,
+AdaptiveMaxConcurrency& Server::MaxConcurrencyOf(google::protobuf::Service* service,
                               const butil::StringPiece& method_name) {
     return MaxConcurrencyOf(service->GetDescriptor()->full_name(), method_name);
 }
@@ -2014,7 +2096,7 @@ int Server::SSLSwitchCTXByHostname(struct ssl_st* ssl,
                                    int* al, Server* server) {
     (void)al;
     const char* hostname = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
-    bool strict_sni = server->_options.ssl_options.strict_sni;
+    bool strict_sni = server->_options.ssl_options().strict_sni;
     if (hostname == NULL) {
         return strict_sni ? SSL_TLSEXT_ERR_ALERT_FATAL : SSL_TLSEXT_ERR_NOACK;
     }
@@ -2024,7 +2106,7 @@ int Server::SSLSwitchCTXByHostname(struct ssl_st* ssl,
         return SSL_TLSEXT_ERR_ALERT_FATAL;
     }
     
-    SSL_CTX** pctx = s->cert_map.seek(hostname);
+    std::shared_ptr<SocketSSLContext>* pctx = s->cert_map.seek(hostname);
     if (pctx == NULL) {
         const char* dot = hostname;
         for (; *dot != '\0'; ++dot) {
@@ -2046,9 +2128,9 @@ int Server::SSLSwitchCTXByHostname(struct ssl_st* ssl,
     }
 
     // Switch SSL_CTX to the one with correct hostname
-    SSL_set_SSL_CTX(ssl, *pctx);
+    SSL_set_SSL_CTX(ssl, (*pctx)->raw_ctx);
     return SSL_TLSEXT_ERR_OK;
 }
 #endif // SSL_CTRL_SET_TLSEXT_HOSTNAME
 
-} // namespace brpc
+}  // namespace brpc

@@ -20,10 +20,11 @@ Pb2JsonOptions::Pb2JsonOptions()
     , pretty_json(false)
     , enable_protobuf_map(true)
 #ifdef BAIDU_INTERNAL
-    , bytes_to_base64(false) {
+    , bytes_to_base64(false)
 #else
-    , bytes_to_base64(true) {
+    , bytes_to_base64(true)
 #endif
+    , jsonify_empty_array(false) {
 }
 
 class PbToJsonConverter {
@@ -89,7 +90,8 @@ bool PbToJsonConverter::Convert(const google::protobuf::Message& message, Handle
             }
             continue;
         } else if (field->is_repeated()
-                   && reflection->FieldSize(message, field) == 0) {
+                   && reflection->FieldSize(message, field) == 0
+                   && !_option.jsonify_empty_array) {
             // Repeated field that has no entry
             continue;
         }
@@ -268,10 +270,10 @@ bool ProtoMessageToJsonStream(const google::protobuf::Message& message,
     PbToJsonConverter converter(options);
     bool succ = false;
     if (options.pretty_json) {    
-        rapidjson::PrettyWriter<OutputStream> writer(os);
+        BUTIL_RAPIDJSON_NAMESPACE::PrettyWriter<OutputStream> writer(os);
         succ = converter.Convert(message, writer); 
     } else {
-        rapidjson::OptimizedWriter<OutputStream> writer(os);
+        BUTIL_RAPIDJSON_NAMESPACE::OptimizedWriter<OutputStream> writer(os);
         succ = converter.Convert(message, writer); 
     }
     if (!succ && error) {
@@ -287,7 +289,7 @@ bool ProtoMessageToJson(const google::protobuf::Message& message,
                         std::string* error) {
     // TODO(gejun): We could further wrap a std::string as a buffer to reduce
     // a copying.
-    rapidjson::StringBuffer buffer;
+    BUTIL_RAPIDJSON_NAMESPACE::StringBuffer buffer;
     if (json2pb::ProtoMessageToJsonStream(message, options, buffer, error)) {
         json->append(buffer.GetString(), buffer.GetSize());
         return true;

@@ -42,7 +42,7 @@ int Init(EndPoint server_addr_and_port, const ChannelOptions* options);
 int Init(const char* server_addr_and_port, const ChannelOptions* options);
 int Init(const char* server_addr, int port, const ChannelOptions* options);
 ```
-这类Init连接的服务器往往有固定的ip地址，不需要名字服务和负载均衡，创建起来相对轻量。但是**请勿频繁创建使用域名的Channel**。这需要查询dns，可能最多耗时10秒(查询DNS的默认超时)。重用它们。
+这类Init连接的服务器往往有固定的ip地址，不需要命名服务和负载均衡，创建起来相对轻量。但是**请勿频繁创建使用域名的Channel**。这需要查询dns，可能最多耗时10秒(查询DNS的默认超时)。重用它们。
 
 合法的“server_addr_and_port”：
 - 127.0.0.1:80
@@ -60,25 +60,25 @@ int Init(const char* naming_service_url,
          const char* load_balancer_name,
          const ChannelOptions* options);
 ```
-这类Channel需要定期从`naming_service_url`指定的名字服务中获得服务器列表，并通过`load_balancer_name`指定的负载均衡算法选择出一台机器发送请求。
+这类Channel需要定期从`naming_service_url`指定的命名服务中获得服务器列表，并通过`load_balancer_name`指定的负载均衡算法选择出一台机器发送请求。
 
-你**不应该**在每次请求前动态地创建此类（连接服务集群的）Channel。因为创建和析构此类Channel牵涉到较多的资源，比如在创建时得访问一次名字服务，否则便不知道有哪些服务器可选。由于Channel可被多个线程共用，一般也没有必要动态创建。
+你**不应该**在每次请求前动态地创建此类（连接服务集群的）Channel。因为创建和析构此类Channel牵涉到较多的资源，比如在创建时得访问一次命名服务，否则便不知道有哪些服务器可选。由于Channel可被多个线程共用，一般也没有必要动态创建。
 
 当`load_balancer_name`为NULL或空时，此Init等同于连接单台server的Init，`naming_service_url`应该是"ip:port"或"域名:port"。你可以通过这个Init函数统一Channel的初始化方式。比如你可以把`naming_service_url`和`load_balancer_name`放在配置文件中，要连接单台server时把`load_balancer_name`置空，要连接服务集群时则设置一个有效的算法名称。
 
-## 名字服务
+## 命名服务
 
-名字服务把一个名字映射为可修改的机器列表，在client端的位置如下：
+命名服务把一个名字映射为可修改的机器列表，在client端的位置如下：
 
 ![img](../images/ns.png)
 
-有了名字服务后client记录的是一个名字，而不是每一台下游机器。而当下游机器变化时，就只需要修改名字服务中的列表，而不需要逐台修改每个上游。这个过程也常被称为“解耦上下游”。当然在具体实现上，上游会记录每一台下游机器，并定期向名字服务请求或被推送最新的列表，以避免在RPC请求时才去访问名字服务。使用名字服务一般不会对访问性能造成影响，对名字服务的压力也很小。
+有了命名服务后client记录的是一个名字，而不是每一台下游机器。而当下游机器变化时，就只需要修改命名服务中的列表，而不需要逐台修改每个上游。这个过程也常被称为“解耦上下游”。当然在具体实现上，上游会记录每一台下游机器，并定期向命名服务请求或被推送最新的列表，以避免在RPC请求时才去访问命名服务。使用命名服务一般不会对访问性能造成影响，对命名服务的压力也很小。
 
 `naming_service_url`的一般形式是"**protocol://service_name**"
 
 ### bns://\<bns-name\>
 
-BNS是百度内常用的名字服务，比如bns://rdev.matrix.all，其中"bns"是protocol，"rdev.matrix.all"是service-name。相关一个gflag是-ns_access_interval: ![img](../images/ns_access_interval.png)
+BNS是百度内常用的命名服务，比如bns://rdev.matrix.all，其中"bns"是protocol，"rdev.matrix.all"是service-name。相关一个gflag是-ns_access_interval: ![img](../images/ns_access_interval.png)
 
 如果BNS中显示不为空，但Channel却说找不到服务器，那么有可能BNS列表中的机器状态位（status）为非0，含义为机器不可用，所以不会被加入到server候选集中．状态位可通过命令行查看：
 
@@ -86,19 +86,77 @@ BNS是百度内常用的名字服务，比如bns://rdev.matrix.all，其中"bns"
 
 ### file://\<path\>
 
-服务器列表放在`path`所在的文件里，比如"file://conf/local_machine_list"中的“conf/local_machine_list”对应一个文件，其中每行应是一台服务器的地址。当文件更新时, brpc会重新加载。
+服务器列表放在`path`所在的文件里，比如"file://conf/machine_list"中的“conf/machine_list”对应一个文件:
+ * 每行是一台服务器的地址。
+ * \#之后的是注释会被忽略
+ * 地址后出现的非注释内容被认为是tag，由一个或多个空格与前面的地址分隔，相同的地址+不同的tag被认为是不同的实例。
+ * 当文件更新时, brpc会重新加载。
+```
+# 此行会被忽略
+10.24.234.17 tag1  # 这是注释，会被忽略
+10.24.234.17 tag2  # 此行和上一行被认为是不同的实例
+10.24.234.18
+10.24.234.19
+```
+
+优点: 易于修改，方便单测。
+
+缺点: 更新时需要修改每个上游的列表文件，不适合线上部署。
 
 ### list://\<addr1\>,\<addr2\>...
 
-服务器列表直接跟在list://之后，以逗号分隔，比如"list://db-bce-81-3-186.db01:7000,m1-bce-44-67-72.m1:7000,cp01-rd-cos-006.cp01:7000" 中有三个地址。
+服务器列表直接跟在list://之后，以逗号分隔，比如"list://db-bce-81-3-186.db01:7000,m1-bce-44-67-72.m1:7000,cp01-rd-cos-006.cp01:7000"中有三个地址。
+
+地址后可以声明tag，用一个或多个空格分隔，相同的地址+不同的tag被认为是不同的实例。
+
+优点: 可在命令行中直接配置，方便单测。
+
+缺点: 无法在运行时修改，完全不能用于线上部署。
 
 ### http://\<url\>
 
 连接一个域名下所有的机器, 例如http://www.baidu.com:80 ，注意连接单点的Init（两个参数）虽然也可传入域名，但只会连接域名下的一台机器。
 
-### 名字服务过滤器
+优点: DNS的通用性，公网内网均可使用。
 
-当名字服务获得机器列表后，可以自定义一个过滤器进行筛选，最后把结果传递给负载均衡：
+缺点: 受限于DNS的格式限制无法传递复杂的meta数据，也无法实现通知机制。
+
+### https://\<url\>
+
+和http前缀类似，只是会自动开启SSL。
+
+### consul://\<service-name\>
+
+通过consul获取服务名称为service-name的服务列表。consul的默认地址是localhost:8500，可通过gflags设置-consul\_agent\_addr来修改。consul的连接超时时间默认是200ms，可通过-consul\_connect\_timeout\_ms来修改。
+
+默认在consul请求参数中添加[stale](https://www.consul.io/api/index.html#consistency-modes)和passing（仅返回状态为passing的服务列表），可通过gflags中-consul\_url\_parameter改变[consul请求参数](https://www.consul.io/api/health.html#parameters-2)。
+
+除了对consul的首次请求，后续对consul的请求都采用[long polling](https://www.consul.io/api/index.html#blocking-queries)的方式，即仅当服务列表更新或请求超时后consul才返回结果，这里超时时间默认为60s，可通过-consul\_blocking\_query\_wait\_secs来设置。
+
+若consul返回的服务列表[响应格式](https://www.consul.io/api/health.html#sample-response-2)有错误，或者列表中所有服务都因为地址、端口等关键字段缺失或无法解析而被过滤，consul naming server会拒绝更新服务列表，并在一段时间后（默认500ms，可通过-consul\_retry\_interval\_ms设置）重新访问consul。
+
+如果consul不可访问，服务可自动降级到file naming service获取服务列表。此功能默认关闭，可通过设置-consul\_enable\_degrade\_to\_file\_naming\_service来打开。服务列表文件目录通过-consul \_file\_naming\_service\_dir来设置，使用service-name作为文件名。该文件可通过consul-template生成，里面会保存consul不可用之前最新的下游服务节点。当consul恢复时可自动恢复到consul naming service。
+
+### 更多命名服务
+用户可以通过实现brpc::NamingService来对接更多命名服务，具体见[这里](https://github.com/brpc/brpc/blob/master/docs/cn/load_balancing.md#%E5%91%BD%E5%90%8D%E6%9C%8D%E5%8A%A1)
+
+### 命名服务中的tag
+每个地址可以附带一个tag，在常见的命名服务中，如果地址后有空格，则空格之后的内容均为tag。
+相同的地址配合不同的tag被认为是不同的实例，brpc会建立不同的连接。用户可利用这个特性更灵活地控制与单个地址的连接方式。
+如果你需要"带权重的轮询"，你应当优先考虑使用[wrr算法](#wrr)，而不是用tag来模拟。
+
+### VIP相关的问题
+VIP一般是4层负载均衡器的公网ip，背后有多个RS。当客户端连接至VIP时，VIP会选择一个RS建立连接，当客户端连接断开时，VIP也会断开与对应RS的连接。
+
+如果客户端只与VIP建立一个连接(brpc中的单连接)，那么来自这个客户端的所有流量都会落到一台RS上。如果客户端的数量非常多，至少在集群的角度，所有的RS还是会分到足够多的连接，从而基本均衡。但如果客户端的数量不多，或客户端的负载差异很大，那么可能在个别RS上出现热点。另一个问题是当有多个VIP可选时，客户端分给它们的流量与各自后面的RS数量可能不一致。
+
+解决这个问题的一种方法是使用连接池模式(pooled)，这样客户端对一个VIP就可能建立多个连接(约为一段时间内的最大并发度)，从而让负载落到多个RS上。如果有多个VIP，可以用[wrr负载均衡](#wrr)给不同的VIP声明不同的权重从而分到对应比例的流量，或给相同的VIP后加上多个不同的tag而被认为是多个不同的实例。
+
+如果对性能有更高的要求，或要限制大集群中连接的数量，可以使用单连接并给相同的VIP加上不同的tag以建立多个连接。相比连接池一般连接数量更小，系统调用开销更低，但如果tag不够多，仍可能出现RS热点。
+
+### 命名服务过滤器
+
+当命名服务获得机器列表后，可以自定义一个过滤器进行筛选，最后把结果传递给负载均衡：
 
 ![img](../images/ns_filter.jpg)
 
@@ -152,6 +210,10 @@ int main() {
 
 即round robin，总是选择列表中的下一台服务器，结尾的下一台是开头，无需其他设置。比如有3台机器a,b,c，那么brpc会依次向a, b, c, a, b, c, ...发送请求。注意这个算法的前提是服务器的配置，网络条件，负载都是类似的。
 
+### wrr
+
+即weighted round robin, 根据服务器列表配置的权重值来选择服务器。服务器被选到的机会正比于其权重值，并且该算法能保证同一服务器被选到的结果较均衡的散开。
+
 ### random
 
 随机从列表中选择一台服务器，无需其他设置。和round robin类似，这个算法的前提也是服务器都是类似的。
@@ -180,7 +242,7 @@ locality-aware，优先选择延时低的下游，直到其延时高于其他机
 | ------------------------- | ----- | ---------------------------------------- | ----------------------- |
 | health_check_interval （R） | 3     | seconds between consecutive health-checkings | src/brpc/socket_map.cpp |
 
-一旦server被连接上，它会恢复为可用状态。如果在隔离过程中，server从名字服务中删除了，brpc也会停止连接尝试。
+一旦server被连接上，它会恢复为可用状态。如果在隔离过程中，server从命名服务中删除了，brpc也会停止连接尝试。
 
 # 发起访问
 
@@ -193,7 +255,7 @@ stub.some_method(controller, request, response, done);
 ```c++
 XXX_Stub(&channel).some_method(controller, request, response, done);
 ```
-一个例外是http client。访问http服务和protobuf没什么关系，直接调用CallMethod即可，除了Controller和done均为NULL，详见[访问HTTP服务](http_client.md)。
+一个例外是http/h2 client。访问http服务和protobuf没什么关系，直接调用CallMethod即可，除了Controller和done均为NULL，详见[访问http/h2服务](http_client.md)。
 
 ## 同步访问
 
@@ -473,7 +535,7 @@ Controller.set_max_retry(0)或ChannelOptions.max_retry=0关闭重试。
 
 一些错误重试是没有意义的，就不会重试，比如请求有错时(EREQUEST)不会重试，因为server总不会接受,没有意义。
 
-用户可以通过继承[brpc::RetryPolicy](https://github.com/brpc/brpc/blob/master/src/brpc/retry_policy.h)自定义重试条件。比如brpc默认不重试HTTP相关的错误，而你的程序中希望在碰到HTTP_STATUS_FORBIDDEN (403)时重试，可以这么做：
+用户可以通过继承[brpc::RetryPolicy](https://github.com/brpc/brpc/blob/master/src/brpc/retry_policy.h)自定义重试条件。比如brpc默认不重试http/h2相关的错误，而你的程序中希望在碰到HTTP_STATUS_FORBIDDEN (403)时重试，可以这么做：
 
 ```c++
 #include <brpc/retry_policy.h>
@@ -481,7 +543,7 @@ Controller.set_max_retry(0)或ChannelOptions.max_retry=0关闭重试。
 class MyRetryPolicy : public brpc::RetryPolicy {
 public:
     bool DoRetry(const brpc::Controller* cntl) const {
-        if (cntl->ErrorCode() == brpc::EHTTP && // HTTP错误
+        if (cntl->ErrorCode() == brpc::EHTTP && // http/h2错误
             cntl->http_response().status_code() == brpc::HTTP_STATUS_FORBIDDEN) {
             return true;
         }
@@ -515,16 +577,23 @@ Channel的默认协议是baidu_std，可通过设置ChannelOptions.protocol换�
 目前支持的有：
 
 - PROTOCOL_BAIDU_STD 或 “baidu_std"，即[百度标准协议](baidu_std.md)，默认为单连接。
+- PROTOCOL_HTTP 或 ”http", http/1.0或http/1.1协议，默认为连接池(Keep-Alive)。
+  - 访问普通http服务的方法见[访问http/h2服务](http_client.md)
+  - 通过http:json或http:proto访问pb服务的方法见[http/h2衍生协议](http_derivatives.md)
+- PROTOCOL_H2 或 ”h2", http/2.0协议，默认是单连接。
+  - 访问普通h2服务的方法见[访问http/h2服务](http_client.md)。
+  - 通过h2:json或h2:proto访问pb服务的方法见[http/h2衍生协议](http_derivatives.md)
+- "h2:grpc", [gRPC](https://grpc.io)的协议，也是h2的衍生协议，默认为单连接，具体见[h2:grpc](http_derivatives.md#h2grpc)。
+- PROTOCOL_THRIFT 或 "thrift"，[apache thrift](https://thrift.apache.org)的协议，默认为连接池, 具体方法见[访问thrift](thrift.md)。
+- PROTOCOL_MEMCACHE 或 "memcache"，memcached的二进制协议，默认为单连接。具体方法见[访问memcached](memcache_client.md)。
+- PROTOCOL_REDIS 或 "redis"，redis 1.2后的协议(也是hiredis支持的协议)，默认为单连接。具体方法见[访问Redis](redis_client.md)。
 - PROTOCOL_HULU_PBRPC 或 "hulu_pbrpc"，hulu的协议，默认为单连接。
 - PROTOCOL_NOVA_PBRPC 或 ”nova_pbrpc“，网盟的协议，默认为连接池。
-- PROTOCOL_HTTP 或 ”http", http 1.0或1.1协议，默认为连接池(Keep-Alive)。具体方法见[访问HTTP服务](http_client.md)。
 - PROTOCOL_SOFA_PBRPC 或 "sofa_pbrpc"，sofa-pbrpc的协议，默认为单连接。
 - PROTOCOL_PUBLIC_PBRPC 或 "public_pbrpc"，public_pbrpc的协议，默认为连接池。
 - PROTOCOL_UBRPC_COMPACK 或 "ubrpc_compack"，public/ubrpc的协议，使用compack打包，默认为连接池。具体方法见[ubrpc (by protobuf)](ub_client.md)。相关的还有PROTOCOL_UBRPC_MCPACK2或ubrpc_mcpack2，使用mcpack2打包。
 - PROTOCOL_NSHEAD_CLIENT 或 "nshead_client"，这是发送baidu-rpc-ub中所有UBXXXRequest需要的协议，默认为连接池。具体方法见[访问UB](ub_client.md)。
 - PROTOCOL_NSHEAD 或 "nshead"，这是发送NsheadMessage需要的协议，默认为连接池。具体方法见[nshead+blob](ub_client.md#nshead-blob) 。
-- PROTOCOL_MEMCACHE 或 "memcache"，memcached的二进制协议，默认为单连接。具体方法见[访问memcached](memcache_client.md)。
-- PROTOCOL_REDIS 或 "redis"，redis 1.2后的协议（也是hiredis支持的协议），默认为单连接。具体方法见[访问Redis](redis_client.md)。
 - PROTOCOL_NSHEAD_MCPACK 或 "nshead_mcpack", 顾名思义，格式为nshead + mcpack，使用mcpack2pb适配，默认为连接池。
 - PROTOCOL_ESP 或 "esp"，访问使用esp协议的服务，默认为连接池。
 
@@ -548,11 +617,11 @@ brpc支持以下连接方式：
 
 - CONNECTION_TYPE_SINGLE 或 "single" 为单连接
 
-- CONNECTION_TYPE_POOLED 或 "pooled" 为连接池, 与单个远端的最大连接数由-max_connection_pool_size控制:
+- CONNECTION_TYPE_POOLED 或 "pooled" 为连接池, 单个远端对应的连接池最多能容纳的连接数由-max_connection_pool_size控制。注意,此选项不等价于“最大连接数”。需要连接时只要没有闲置的，就会新建；归还时，若池中已有max_connection_pool_size个连接的话，会直接关闭。max_connection_pool_size的取值要符合并发，否则超出的部分会被频繁建立和关闭，效果类似短连接。若max_connection_pool_size为0，就近似于完全的短连接。
 
   | Name                         | Value | Description                              | Defined At          |
   | ---------------------------- | ----- | ---------------------------------------- | ------------------- |
-  | max_connection_pool_size (R) | 100   | maximum pooled connection count to a single endpoint | src/brpc/socket.cpp |
+  | max_connection_pool_size (R) | 100   | Max number of pooled connections to a single endpoint | src/brpc/socket.cpp |
 
 - CONNECTION_TYPE_SHORT 或 "short" 为短连接
 
@@ -602,13 +671,31 @@ brpc支持[Streaming RPC](streaming_rpc.md)，这是一种应用层的连接，�
 
 baidu_std和hulu_pbrpc协议支持附件，这段数据由用户自定义，不经过protobuf的序列化。站在client的角度，设置在Controller::request_attachment()的附件会被server端收到，response_attachment()则包含了server端送回的附件。附件不受压缩选项影响。
 
-在http协议中，附件对应[message body](http://www.w3.org/Protocols/rfc2616/rfc2616-sec4.html)，比如要POST的数据就设置在request_attachment()中。
+在http/h2协议中，附件对应[message body](http://www.w3.org/Protocols/rfc2616/rfc2616-sec4.html)，比如要POST的数据就设置在request_attachment()中。
+
+## 开启SSL
+
+要开启SSL，首先确保代码依赖了最新的openssl库。如果openssl版本很旧，会有严重的安全漏洞，支持的加密算法也少，违背了开启SSL的初衷。
+然后设置`ChannelOptions.mutable_ssl_options()`，具体选项见[ssl_options.h](https://github.com/brpc/brpc/blob/master/src/brpc/ssl_options.h)。ChannelOptions.has_ssl_options()可查询是否设置过ssl_options, ChannelOptions.ssl_options()可访问到设置过的只读ssl_options。
+
+```c++
+// 开启客户端SSL并使用默认值。
+options.mutable_ssl_options();
+
+// 开启客户端SSL并定制选项。
+options.mutable_ssl_options()->ciphers_name = "...";
+options.mutable_ssl_options()->sni_name = "...";
+```
+- 连接单点和集群的Channel均可以开启SSL访问（初始实现曾不支持集群）。
+- 开启后，该Channel上任何协议的请求，都会被SSL加密后发送。如果希望某些请求不加密，需要额外再创建一个Channel。
+- 针对HTTPS做了些易用性优化：Channel.Init能自动识别https://前缀并自动开启SSL；开启-http_verbose也会输出证书信息。
 
 ## 认证
+
 client端的认证一般分为2种：
 
 1. 基于请求的认证：每次请求都会带上认证信息。这种方式比较灵活，认证信息中可以含有本次请求中的字段，但是缺点是每次请求都会需要认证，性能上有所损失
-2. 基于连接的认证：当TCP连接建立后，client发送认证包，认证成功后，后续该连接上的请求不再需要认证。相比前者，这种方式灵活度不高（一般ren认证包里只能携带本机一些静态信息），但性能较好，一般用于单连接/连接池场景
+2. 基于连接的认证：当TCP连接建立后，client发送认证包，认证成功后，后续该连接上的请求不再需要认证。相比前者，这种方式灵活度不高（一般认证包里只能携带本机一些静态信息），但性能较好，一般用于单连接/连接池场景
 
 针对第一种认证场景，在实现上非常简单，将认证的格式定义加到请求结构体中，每次当做正常RPC发送出去即可；针对第二种场景，brpc提供了一种机制，只要用户继承实现：
 
@@ -641,7 +728,7 @@ set_request_compress_type()设置request的压缩方式，默认不压缩。
 
 注意：附件不会被压缩。
 
-HTTP body的压缩方法见[client压缩request body](http_client#压缩request-body)。
+http/h2 body的压缩方法见[client压缩request body](http_client#压缩request-body)。
 
 支持的压缩方法有：
 
@@ -731,7 +818,7 @@ struct ChannelOptions {
 ```
 FATAL 04-07 20:00:03 7778 src/brpc/channel.cpp:123] Invalid address=`bns://group.user-persona.dumi.nj03'. You should use Init(naming_service_name, load_balancer_name, options) to access multiple servers.
 ```
-访问名字服务要使用三个参数的Init，其中第二个参数是load_balancer_name，而这里用的是两个参数的Init，框架认为是访问单点，就会报这个错。
+访问命名服务要使用三个参数的Init，其中第二个参数是load_balancer_name，而这里用的是两个参数的Init，框架认为是访问单点，就会报这个错。
 
 ### Q: 两端都用protobuf，为什么不能互相访问
 
