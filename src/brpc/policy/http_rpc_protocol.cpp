@@ -19,6 +19,7 @@
 #include <gflags/gflags.h>
 #include <json2pb/pb_to_json.h>                    // ProtoMessageToJson
 #include <json2pb/json_to_pb.h>                    // JsonToProtoMessage
+#include <google/protobuf/util/json_util.h>
 
 #include "butil/unique_ptr.h"                       // std::unique_ptr
 #include "butil/string_splitter.h"                  // StringMultiSplitter
@@ -66,6 +67,11 @@ DEFINE_string(http_header_of_user_ip, "", "http requests sent by proxies may "
 DEFINE_bool(pb_enum_as_number, false, "[Not recommended] Convert enums in "
             "protobuf to json as numbers, affecting both client-side and "
             "server-side");
+
+DEFINE_bool(pb_always_print_primitive_fields, false, "[Not recommended] Whether to always print primitive fields. By default proto3 primitive "
+        "fields with default values will be omitted in JSON output. For example, an "
+        "int32 field set to 0 will be omitted. Set this flag to true will override "
+        "the default behavior and print primitive fields regardless of their values. ");
 
 // Read user address from the header specified by -http_header_of_user_ip
 static bool GetUserAddressFromHeaderImpl(const HttpHeader& headers,
@@ -739,15 +745,28 @@ HttpResponseSender::~HttpResponseSender() {
                 cntl->SetFailed(ERESPONSE, "Fail to serialize %s", res->GetTypeName().c_str());
             }
         } else {
-            std::string err;
-            json2pb::Pb2JsonOptions opt;
-            opt.bytes_to_base64 = cntl->has_pb_bytes_to_base64();
-            opt.jsonify_empty_array = cntl->has_pb_jsonify_empty_array();
-            opt.enum_option = (FLAGS_pb_enum_as_number
-                               ? json2pb::OUTPUT_ENUM_BY_NUMBER
-                               : json2pb::OUTPUT_ENUM_BY_NAME);
-            if (!json2pb::ProtoMessageToJson(*res, &wrapper, opt, &err)) {
-                cntl->SetFailed(ERESPONSE, "Fail to convert response to json, %s", err.c_str());
+            if(FLAGS_pb_always_print_primitive_fields){
+                std::string rs;
+                google::protobuf::util::JsonOptions options;
+                options.always_print_primitive_fields = true;
+                options.preserve_proto_field_names = true;
+                options.always_print_enums_as_ints = (FLAGS_pb_enum_as_number
+                                                      ? json2pb::OUTPUT_ENUM_BY_NUMBER
+                                                      : json2pb::OUTPUT_ENUM_BY_NAME);
+                options.add_whitespace = false;
+                google::protobuf::util::MessageToJsonString(*res,&rs,options);
+                cntl->response_attachment().append(rs);
+            }else{
+                std::string err;
+                json2pb::Pb2JsonOptions opt;
+                opt.bytes_to_base64 = cntl->has_pb_bytes_to_base64();
+                opt.jsonify_empty_array = cntl->has_pb_jsonify_empty_array();
+                opt.enum_option = (FLAGS_pb_enum_as_number
+                                   ? json2pb::OUTPUT_ENUM_BY_NUMBER
+                                   : json2pb::OUTPUT_ENUM_BY_NAME);
+                if (!json2pb::ProtoMessageToJson(*res, &wrapper, opt, &err)) {
+                    cntl->SetFailed(ERESPONSE, "Fail to convert response to json, %s", err.c_str());
+                }
             }
         }
     }
