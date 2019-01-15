@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package proto;
+
+message ArceeMeta{
+    string sensor = 1;
+    int64 ts = 2;
+}
+
+message WeedFileArrayMessage {
+    repeated string ArrayData = 1; // []string
+}
+
+message WeedFileMapId {
+    map<string, string> MapIds = 1;
+}
+
+message WeedFileMapMessage {
+    map<string, bytes> MapData = 1; // map[string][]byte
+}
+
+service GrpcService {
+    // 根据Fid获取文件内容
+    rpc GetFileContent (WeedFileArrayMessage) returns (WeedFileMapMessage) {
+    }
+    // 上传文件保存并返回Fid
+    rpc PostFileContent (WeedFileMapMessage) returns (WeedFileMapId) {
+    }
+    // 根据文件Fid删除文件并释放空间
+    rpc DeleteFile (WeedFileArrayMessage) returns (WeedFileArrayMessage) {
+    }
+}

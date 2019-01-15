@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package extend;
+
+//- 位置坐标，以图像左上角为0,0
+message Point_t
+{
+    float x = 1;
+    float y = 2;
+}
+
+//- 位置矩形
+message Rect_t
+{
+    //- 左上角坐标
+    Point_t top_left     = 1;
+    //- 右下角坐标
+    Point_t bottom_right = 2;
+}
+
+enum ValueType{
+    ValueType_Unknown = 0;
+    ValueType_String = 1;
+    ValueType_Int = 2;
+    ValueType_Float  = 3;
+    ValueType_Bool = 4;
+}
+
+message Attribute {
+    int32 Id = 1;
+    string Name = 2;
+    ValueType ValueType = 3;
+    string Value = 4;
+    float Confidence = 5;
+    map<string, Attribute> MoreDetails = 6;
+}
+
+message Object_t
+{
+    //- 跟踪ID，不同ID表示不同的轨迹
+    int32  track_id   = 1;
+    //- 跟踪质量，目前缺失
+    double score      = 2;
+    //- 目标所在位置
+    Rect_t   rect     = 3;
+    //- 特征点信息，目前只有人脸有
+    repeated Point_t  points   = 4;
+    //- 关键属性信息,目前缺失
+    repeated int32  attribute  = 5;
+    //- 目标类别
+    // OBJ_TYPE_CAR = 1;
+    // OBJ_TYPE_BICYCLE = 2;
+    // OBJ_TYPE_TRICYCLE = 3;
+    // OBJ_TYPE_PEDESTRIAN = 4;
+    // OBJ_TYPE_FACE = 1024;
+    int32  type   = 6;
+    map<string, Attribute> attributes = 7; // attribute type + attribute attribute
+}
+
+//- 每一帧的扩展信息
+message StructData_t
+{
+    //- 帧号，与视频平台sn一致；如果是rtsp或者本地视频文件，则是自增数字
+    int64 frameindex   = 1;
+    //- 时间戳，13位毫秒
+    int64 timestamp    = 2;
+    //- 结构化信息
+    repeated Object_t  objects      = 3;
+}

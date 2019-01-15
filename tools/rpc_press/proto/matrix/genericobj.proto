@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package dg.model;
+
+import "matrix_common.proto";
+
+enum NonMotorVehicleGesture {
+    ATTITUDE_POSITIVE = 0;
+    ATTITUDE_RIGHT = 1;
+    ATTITUDE_LEFT = 2;
+    ATTITUDE_BACK = 3;
+}
+
+enum NonMotorVehicleType  {
+    NONMOTOR_TYPE_UNKNOWN = 0; // 未知
+    NONMOTOR_TYPE_VEHICLE = 1; // 机动车
+    NONMOTOR_TYPE_PEDESTRIAN = 2; // 行人
+    NONMOTOR_TYPE_VEHICLE2 = 3; // 二轮车
+    NONMOTOR_TYPE_VEHICLE3 = 4; // 三轮车
+    NONMOTOR_TYPE_ROOF = 5; // 三轮车(有蓬)
+    NONMOTOR_TYPE_SEAL = 6; // 三轮车(封闭驾驶舱)
+    NONMOTOR_TYPE_BICYCLE = 7; // 自行车
+}
+
+message GenericObj {
+    ObjType ObjType = 1;
+    DataFmtType FmtType = 2;
+    bytes BinData = 3;
+}
+
+message VehicleObj {
+    SrcMetadata Metadata = 1;
+    Image Img = 2;
+    repeated RecVehicle Vehicle = 3;
+}
+
+message PedestrianObj {
+    SrcMetadata Metadata = 1;
+    Image Img = 2;
+    repeated RecPedestrian Pedestrian = 3;
+}
+
+message NonMotorVehicleObj {
+    SrcMetadata Metadata = 1;
+    Image Img = 2;
+    repeated RecNonMotorVehicle NonMotorVehicles = 3;
+}
+
+message FaceObj {
+    SrcMetadata Metadata = 1;
+    Image Img = 2;
+    repeated RecFace Faces = 3;
+}
+
+message RecObjs {
+    SrcMetadata Metadata = 1;
+    Image Img = 2;
+    repeated RecVehicle Vehicle = 3;
+    repeated RecPedestrian Pedestrian = 4;
+    repeated RecNonMotorVehicle NonMotorVehicles = 5;
+    repeated RecFace RecFaces = 6;
+}

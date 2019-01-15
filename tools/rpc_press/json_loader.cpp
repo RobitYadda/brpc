@@ -19,6 +19,9 @@
 #include "pb_util.h"
 #include "json_loader.h"
 #include <errno.h>
+#include "proto/vse.pb.h"
+#include <iostream>
+#include <fstream>
 
 namespace brpc {
 
@@ -197,15 +200,44 @@ void JsonLoader::load_messages(
         VLOG(1) << "Load " << out_msgs->size() + 1 << "-th json=`"
                 << request_json << '\'';
         std::string error;
-        google::protobuf::Message* request = _request_prototype->New();
-        butil::IOBufAsZeroCopyInputStream wrapper(request_json);
-        if (!json2pb::JsonToProtoMessage(&wrapper, request, &error)) {
-            LOG(WARNING) << "Fail to convert to pb: " << error << ", json=`"
-                         << request_json << '\'';
-            delete request;
-            continue;
+
+        if(FLAGS_task_type == "image-stream"){
+
+            ::dg::model::vse::DebugPushRequest* url_req = new ::dg::model::vse::DebugPushRequest();
+            butil::IOBufAsZeroCopyInputStream wrapper(request_json);
+            if (!json2pb::JsonToProtoMessage(&wrapper, url_req, &error)) {
+                LOG(WARNING) << "Fail to convert to pb: " << error << ", json=`"
+                             << request_json << '\'';
+                delete url_req;
+                continue;
+            }
+
+            // read image data from url_req
+            std::string img_url = url_req->img_url();
+            std::ifstream ifs(img_url, std::ifstream::in);
+            std::string imgdata((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+            ifs.close();
+
+            ::dg::model::vse::PushImageRequest * request = new ::dg::model::vse::PushImageRequest();
+            request->set_task_id(url_req->task_id());
+            request->mutable_result()->mutable_additionalinfos()->insert({"srcbindata","test for srcbindata."});
+            request->mutable_result()->set_image(imgdata);
+            request->mutable_result()->set_uri(img_url);
+
+            delete url_req;
+            out_msgs->push_back((google::protobuf::Message*)request);
+        }else{
+            google::protobuf::Message* request = _request_prototype->New();
+            butil::IOBufAsZeroCopyInputStream wrapper(request_json);
+            if (!json2pb::JsonToProtoMessage(&wrapper, request, &error)) {
+                LOG(WARNING) << "Fail to convert to pb: " << error << ", json=`"
+                             << request_json << '\'';
+                delete request;
+                continue;
+            }
+            out_msgs->push_back(request);
         }
-        out_msgs->push_back(request);
+
         LOG_IF(INFO, (out_msgs->size() % 10000) == 0)
             << "Loaded " << out_msgs->size() << " jsons";
     }

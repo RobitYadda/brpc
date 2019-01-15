@@ -19,6 +19,9 @@
 #include <google/protobuf/descriptor.pb.h>
 #include <google/protobuf/dynamic_message.h>
 #include <google/protobuf/compiler/importer.h>
+#include <gflags/gflags.h>
+
+DECLARE_string(task_type);
 
 namespace pbrpcframework {
 const google::protobuf::MethodDescriptor* find_method_by_name(
@@ -38,4 +41,5 @@ const google::protobuf::Message* get_prototype_by_name(
         google::protobuf::compiler::Importer* importer, 
         google::protobuf::DynamicMessageFactory* factory);
 }
+
 #endif //UTIL_PB_UTIL_H

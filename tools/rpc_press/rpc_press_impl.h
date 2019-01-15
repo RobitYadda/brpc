@@ -114,11 +114,13 @@ private:
     
     bool new_pbrpc_press_client_by_client_type(int client_type);
     void sync_client();
+    void heart_beat();
     void handle_response(brpc::Controller* cntl,
                          google::protobuf::Message* request,
                          google::protobuf::Message* response,
                          int64_t start_time_ns);
     static void* sync_call_thread(void* arg);
+    static void* heart_beat_thread(void* arg);
 
     bvar::LatencyRecorder _latency_recorder;
     bvar::Adder<int64_t> _error_count;
@@ -132,6 +134,7 @@ private:
     google::protobuf::compiler::Importer* _importer;
     google::protobuf::DynamicMessageFactory _factory;
     std::vector<pthread_t> _ttid;
+    pthread_t _ext_tid;
     brpc::InfoThread _info_thr;
 };
 }

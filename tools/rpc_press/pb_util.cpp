@@ -15,6 +15,9 @@
 #include <butil/logging.h>
 #include "pb_util.h"
 
+
+DEFINE_string(task_type, "", "specify task type: support <image-stream>");
+
 using google::protobuf::ServiceDescriptor;
 using google::protobuf::Descriptor;
 using google::protobuf::DescriptorPool;
@@ -67,3 +70,4 @@ const Message* get_prototype_by_name(const string& service_name,
 }
 
 }  // pbrpcframework
+

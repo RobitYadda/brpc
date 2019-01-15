@@ -28,6 +28,7 @@
 #include <json2pb/pb_to_json.h>
 #include "json_loader.h"
 #include "rpc_press_impl.h"
+#include "proto/vse.pb.h"
 
 using google::protobuf::Message;
 using google::protobuf::Closure;
@@ -83,6 +84,7 @@ void PressClient::call_method(brpc::Controller* cntl, Message* request,
 
 RpcPress::RpcPress()
     : _pbrpc_client(NULL)
+    , _ext_tid(0)
     , _started(false)
     , _stop(false)
     , _output_json(NULL) {
@@ -155,6 +157,7 @@ int RpcPress::init(const PressOptions* options) {
     }
     brpc::JsonLoader json_util(_importer, &_factory, 
                                      _options.service, _options.method);
+
     if (butil::PathExists(butil::FilePath(_options.input))) {
         int fd = open(_options.input.c_str(), O_RDONLY);
         if (fd < 0) {
@@ -180,9 +183,14 @@ void* RpcPress::sync_call_thread(void* arg) {
     return NULL;
 }
 
-void RpcPress::handle_response(brpc::Controller* cntl, 
+void* RpcPress::heart_beat_thread(void *arg) {
+    ((RpcPress*)arg)->heart_beat();
+    return NULL;
+}
+
+void RpcPress::handle_response(brpc::Controller* cntl,
                                Message* request,
-                               Message* response, 
+                               Message* response,
                                int64_t start_time){
     if (!cntl->Failed()){
         int64_t rpc_call_time_us = butil::gettimeofday_us() - start_time;
@@ -206,6 +214,39 @@ void RpcPress::handle_response(brpc::Controller* cntl,
 }
 
 static butil::atomic<int> g_thread_count(0);
+
+void RpcPress::heart_beat(){
+
+    ::dg::model::vse::HeartbeatRequest h_req;
+    h_req.set_task_id(((::dg::model::vse::PushImageRequest *)(_msgs.front()))->task_id());
+
+    ::dg::model::vse::VSEService_Stub stub_(&_pbrpc_client->_rpc_client);
+    brpc::Controller cntl;
+    int64_t sleep_ms = 1000;
+
+    while (!_stop){
+        const int64_t start_time = butil::gettimeofday_us();
+
+        ::dg::model::vse::HeartbeatResponse h_res;
+
+        google::protobuf::Closure* done = brpc::NewCallback<
+                RpcPress,
+                RpcPress*,
+                brpc::Controller*,
+                Message*,
+                Message*, int64_t>
+                (this, [](brpc::Controller*, Message*, Message*){}, &cntl, &h_req, &h_res, start_time);
+
+
+        const brpc::CallId cid1 = cntl.call_id();
+
+        stub_.Heartbeat(&cntl, &h_req, &h_res, done);
+
+        brpc::Join(cid1);
+
+        usleep(sleep_ms);
+    }
+}
 
 void RpcPress::sync_client() {
     double req_rate = _options.test_req_rate / _options.test_thread_num;
@@ -264,8 +305,17 @@ void RpcPress::sync_client() {
 }
 
 int RpcPress::start() {
-    _ttid.resize(_options.test_thread_num);
     int ret = 0;
+
+    if(FLAGS_task_type=="image-stream"){
+        if ((ret = pthread_create(&_ext_tid, NULL, heart_beat_thread, this)) != 0) {
+            LOG(ERROR) << "Fail to create heart beat thread";
+            return -1;
+        }
+    }
+
+    _ttid.resize(_options.test_thread_num);
+
     for (int i = 0; i < _options.test_thread_num; i++) {
         if ((ret = pthread_create(&_ttid[i], NULL, sync_call_thread, this)) != 0) {
             LOG(ERROR) << "Fail to create sending threads";
@@ -281,6 +331,8 @@ int RpcPress::start() {
         return -1;
     }
     _started = true;
+
+
     return 0;
 }
 int RpcPress::stop() {
@@ -290,6 +342,10 @@ int RpcPress::stop() {
     _stop = true;
     for (size_t i = 0; i < _ttid.size(); i++) {
         pthread_join(_ttid[i], NULL);
+    }
+
+    if(FLAGS_task_type=="image-stream"){
+        pthread_join(_ext_tid, NULL);
     }
     _info_thr.stop();
     return 0;
