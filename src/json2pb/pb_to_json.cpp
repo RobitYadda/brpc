@@ -89,8 +89,9 @@ bool PbToJsonConverter::Convert(const google::protobuf::Message& message, Handle
                 _error = "Missing required field: " + field->full_name();
                 return false;
             }
+
             // Whether dumps default fields
-            if (!_option.always_print_primitive_fields) {
+            if (!_option.always_print_primitive_fields || field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) {
                 continue;
             }
         } else if (field->is_repeated()
