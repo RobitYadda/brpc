@@ -19,7 +19,7 @@
 #include "pb_util.h"
 #include "json_loader.h"
 #include <errno.h>
-#include "proto/vse.pb.h"
+#include "../../../../src/proto/vse.pb.h"
 #include <iostream>
 #include <fstream>
 

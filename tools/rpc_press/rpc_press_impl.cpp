@@ -28,7 +28,7 @@
 #include <json2pb/pb_to_json.h>
 #include "json_loader.h"
 #include "rpc_press_impl.h"
-#include "proto/vse.pb.h"
+#include "../../../../src/proto/vse.pb.h"
 
 using google::protobuf::Message;
 using google::protobuf::Closure;
@@ -213,6 +213,174 @@ void RpcPress::handle_response(brpc::Controller* cntl,
     delete cntl;
 }
 
+class EWMAStatistic{
+
+public:
+
+    float avg_value=0;
+    float alpha = 0.8;
+
+    float update(float sample){
+        avg_value = alpha * sample + (1-alpha) * avg_value;
+        return avg_value;
+    }
+
+    float get(){
+        return avg_value;
+    }
+};
+
+class PIDControl{
+public:
+    float kt = 1;
+    float kp = 0.4*kt; // the bigger kp is, the more quickly change is
+    float ki = 0*kt;// the smaller ki is, the more stable output is
+    float kd = 0*kt;  // should not too big,
+    float error_pre_pre = 0;
+    float error_pre = 0;
+    float error_cur = 0;
+    float u_pre = 0;
+    float u_cur = 0;
+    float delta_u = 0;
+    int update_index = 0;
+
+    inline bool update_u(float error_sample){
+        error_pre_pre = error_pre;
+        error_pre = error_cur;
+        error_cur = error_sample;
+        ++update_index;
+
+        if(update_index<3)
+            return false;
+
+        u_pre = u_cur;
+        delta_u = kp * (error_cur - error_pre) + ki * error_cur + kd * (error_cur - 2*error_pre + error_pre_pre);
+        u_cur = u_pre + delta_u;
+
+        return true;
+    }
+
+    float get(){
+        return delta_u;
+    }
+};
+
+
+class PIDControlV2{
+public:
+    float kp = 0;
+
+    float t = 0.6;
+    float ti = 1;
+    float ki = kp * t / ti;
+
+    float td = 0;
+    float kd = kp * td / t;
+
+    float u_cur = 0;
+    float u_pre = 0;
+    float u_delta = 0;
+
+    float error_pre = 0;
+    float error_cur = 0;
+    float error_sum = 0;
+
+    inline bool update_u(float error_sample){
+        error_pre = error_cur;
+        error_cur = error_sample;
+        error_sum += error_sample;
+        kp = 0.04;
+        ki = 0.0003;
+        kd = 0.0003;
+        u_pre = u_cur;
+        u_cur = kp * error_cur + ki * error_sum + kd * (error_cur - error_pre);
+        u_delta = u_cur - u_pre;
+
+        return true;
+    }
+
+    float get(){
+        return u_cur;
+    }
+
+};
+
+static PIDControlV2 pid_cntl;
+
+void RpcPress::heartbeat_responsehandle(brpc::Controller* cntl,
+                                  google::protobuf::Message* request,
+                                  google::protobuf::Message* response,
+                                  int64_t start_time_ns){
+//    LOG(INFO)<<"GET heart beat response";
+    ::dg::model::vse::HeartbeatResponse *res = (::dg::model::vse::HeartbeatResponse *)response;
+    if(res->code() == 103){
+        LOG(WARNING)<<"task not exists.";
+    }else{
+//        LOG(INFO)<<"get success qps: "<<res->success_qps();
+//        LOG(INFO)<<"get limit qps: "<<res->limit_qps();
+//        LOG(INFO)<<"get call qps: "<<res->call_qps();
+//        LOG(INFO)<<"get pidlimit qps: "<<res->pidlimit_qps();
+//        LOG(INFO)<<"get buffer max limit: "<<res->buffer_maxlimit();
+//        LOG(INFO)<<"get buffer current: "<<res->buffer_current();
+//        LOG(INFO)<<"get buffer window current: "<<res->buffer_windowdura();
+//        LOG(INFO)<<"get lateset buffer window by limit: "<<res->buffer_reachlimit_windowdura();
+//        LOG(INFO)<<"get buffer oneframe latency: "<<res->buffer_oneframe_latency();
+
+//        if(res->buffer_maxlimit()<=res->buffer_current() ){
+//
+//            _sleep_time.store( 1.0f/(res->success_qps()*1.0f)*1000.0f*1000.0f );
+//            usleep(_sleep_time);
+//        }
+
+//        pid_cntl.update_u( res->buffer_current() - res->buffer_maxlimit() );
+//
+//        _options.rate_mtx->lock();
+//        _options.test_req_rate -=  pid_cntl.get();
+//        _options.rate_mtx->unlock();
+//
+//        static EWMAStatistic set_qps;
+//        static EWMAStatistic error_avg;
+//        static EWMAStatistic buffer_window_avg;
+//        static EWMAStatistic actual_qps_avg;
+//        static EWMAStatistic target_qps_avg;
+//        static EWMAStatistic buffer_count_avg;
+//
+//        if(res->buffer_windowdura() > 0){
+//            buffer_window_avg.update(res->buffer_windowdura()*1.0f);
+//            actual_qps_avg.update(res->buffer_current()*1000.0f/res->buffer_windowdura());
+//
+//            target_qps_avg.update(  res->buffer_maxlimit()/(res->buffer_windowdura()*1.0f/res->buffer_current()*res->buffer_maxlimit()) );
+//        }
+//        LOG(INFO)<<"window_avg: "<<buffer_window_avg.get();
+//        LOG(INFO)<<"actual_qps: "<<actual_qps_avg.get();
+//        LOG(INFO)<<"target_qps: "<<target_qps_avg.get();
+
+//        error_avg.update(res->buffer_maxlimit() -res->buffer_current());
+//
+//        LOG(INFO)<<"error avg: "<<error_avg.get();
+//        if( pid_cntl.update_u( error_avg.get() ) ){
+//            set_qps.update(_options.test_req_rate + pid_cntl.delta_u);
+//            _options.test_req_rate = set_qps.get();
+//            LOG(INFO)<<"reset qps: "<<this->_options.test_req_rate;
+//            usleep(1000*1000);
+////            usleep(2.0f * 1.0f/_options.test_req_rate * 1000.0f * 1000.0f);
+//
+////            _options.test_req_rate  = (res->buffer_current() + pid_cntl.delta_u)*1.0f * _options.test_req_rate*1.0f / (res->buffer_current()*1.0f) ;
+//        }
+//
+//        LOG(INFO)<<"reset qps: "<<this->_options.test_req_rate;
+//        LOG(INFO)<<"delta u: "<<pid_cntl.u_delta;
+//        LOG(INFO)<<"u_cur: "<<pid_cntl.u_cur;
+//
+//        {
+//            std::unique_lock<std::mutex> lk(*_options.cv_mtx);
+//            _options.cv->wait(lk);
+//        }
+        usleep(2*1000*1000);
+    }
+}
+
+
 static butil::atomic<int> g_thread_count(0);
 
 void RpcPress::heart_beat(){
@@ -221,11 +389,12 @@ void RpcPress::heart_beat(){
     h_req.set_task_id(((::dg::model::vse::PushImageRequest *)(_msgs.front()))->task_id());
 
     ::dg::model::vse::VSEService_Stub stub_(&_pbrpc_client->_rpc_client);
-    brpc::Controller cntl;
     int64_t sleep_ms = 1000;
 
     while (!_stop){
         const int64_t start_time = butil::gettimeofday_us();
+
+        brpc::Controller cntl;
 
         ::dg::model::vse::HeartbeatResponse h_res;
 
@@ -235,8 +404,7 @@ void RpcPress::heart_beat(){
                 brpc::Controller*,
                 Message*,
                 Message*, int64_t>
-                (this, [](brpc::Controller*, Message*, Message*){}, &cntl, &h_req, &h_res, start_time);
-
+                (this, &RpcPress::heartbeat_responsehandle, &cntl, &h_req, &h_res, start_time);
 
         const brpc::CallId cid1 = cntl.call_id();
 
@@ -244,12 +412,46 @@ void RpcPress::heart_beat(){
 
         brpc::Join(cid1);
 
-        usleep(sleep_ms);
+        usleep(sleep_ms*1000);
     }
 }
 
-void RpcPress::sync_client() {
-    double req_rate = _options.test_req_rate / _options.test_thread_num;
+void RpcPress::sync_client_v2() {
+    //max make up time is 5 s
+    if (_msgs.empty()) {
+        LOG(ERROR) << "nothing to send!";
+        return;
+    }
+    const int thread_index = g_thread_count.fetch_add(1, butil::memory_order_relaxed);
+    int msg_index = thread_index;
+    _sleep_time.store(1000*1000 * (1.0f/this->_options.test_req_rate));
+
+    while (!_stop) {
+        brpc::Controller* cntl = new brpc::Controller;
+        msg_index = (msg_index + _options.test_thread_num) % _msgs.size();
+        Message* request = _msgs[msg_index];
+        Message* response = _pbrpc_client->get_output_message();
+        google::protobuf::Closure* done = brpc::NewCallback<
+                RpcPress,
+                RpcPress*,
+                brpc::Controller*,
+                Message*,
+                Message*, int64_t>
+                (this, &RpcPress::handle_response, cntl, request, response, 0);
+        const brpc::CallId cid1 = cntl->call_id();
+        _pbrpc_client->call_method(cntl, request, response, done);
+        _sent_count << 1;
+
+        if (_options.test_req_rate <= 0) {
+            brpc::Join(cid1);
+        } else {
+            LOG(INFO)<<"sleep time: "<<_sleep_time.load();
+            usleep(_sleep_time.load());
+        }
+    }
+}
+void RpcPress::sync_clientV3() {
+
     //max make up time is 5 s
     if (_msgs.empty()) {
         LOG(ERROR) << "nothing to send!";
@@ -258,14 +460,19 @@ void RpcPress::sync_client() {
     const int thread_index = g_thread_count.fetch_add(1, butil::memory_order_relaxed);
     int msg_index = thread_index;
     std::deque<int64_t> timeq;
-    size_t MAX_QUEUE_SIZE = (size_t)req_rate;
-    if (MAX_QUEUE_SIZE < 100) {
-        MAX_QUEUE_SIZE = 100;
-    } else if (MAX_QUEUE_SIZE > 2000) {
-        MAX_QUEUE_SIZE = 2000;
-    }
+
     timeq.push_back(butil::gettimeofday_us());
     while (!_stop) {
+
+        _options.rate_mtx->lock();
+        double req_rate = _options.test_req_rate / _options.test_thread_num;
+        size_t MAX_QUEUE_SIZE = (size_t)req_rate;
+        if (MAX_QUEUE_SIZE < 100) {
+            MAX_QUEUE_SIZE = 100;
+        } else if (MAX_QUEUE_SIZE > 2000) {
+            MAX_QUEUE_SIZE = 2000;
+        }
+
         brpc::Controller* cntl = new brpc::Controller;
         msg_index = (msg_index + _options.test_thread_num) % _msgs.size();
         Message* request = _msgs[msg_index];
@@ -284,6 +491,7 @@ void RpcPress::sync_client() {
 
         if (_options.test_req_rate <= 0) { 
             brpc::Join(cid1);
+            _options.rate_mtx->unlock();
         } else {
             int64_t end_time = butil::gettimeofday_us();
             int64_t expected_elp = 0;
@@ -297,10 +505,78 @@ void RpcPress::sync_client() {
                 actual_elp = end_time - timeq.front();
                 expected_elp = (int64_t)(1000000 * (timeq.size() - 1) / req_rate);
             }
-            if (actual_elp < expected_elp) {
+            if (actual_elp < expected_elp){
+                _options.rate_mtx->unlock();
+                int  slp = expected_elp - actual_elp  ;
+                usleep(slp);
+            }else{
+                _options.rate_mtx->unlock();
+                _options.cv->notify_one();
+            }
+        }
+
+    }
+}
+
+void RpcPress::sync_client() {
+
+    //max make up time is 5 s
+    if (_msgs.empty()) {
+        LOG(ERROR) << "nothing to send!";
+        return;
+    }
+    const int thread_index = g_thread_count.fetch_add(1, butil::memory_order_relaxed);
+    int msg_index = thread_index;
+    std::deque<int64_t> timeq;
+
+    double req_rate = _options.test_req_rate / _options.test_thread_num;
+    size_t MAX_QUEUE_SIZE = (size_t)req_rate;
+    if (MAX_QUEUE_SIZE < 100) {
+        MAX_QUEUE_SIZE = 100;
+    } else if (MAX_QUEUE_SIZE > 2000) {
+        MAX_QUEUE_SIZE = 2000;
+    }
+
+    timeq.push_back(butil::gettimeofday_us());
+    while (!_stop) {
+
+        brpc::Controller* cntl = new brpc::Controller;
+        msg_index = (msg_index + _options.test_thread_num) % _msgs.size();
+        Message* request = _msgs[msg_index];
+        Message* response = _pbrpc_client->get_output_message();
+        const int64_t start_time = butil::gettimeofday_us();
+        google::protobuf::Closure* done = brpc::NewCallback<
+                RpcPress,
+                RpcPress*,
+                brpc::Controller*,
+                Message*,
+                Message*, int64_t>
+                (this, &RpcPress::handle_response, cntl, request, response, start_time);
+        const brpc::CallId cid1 = cntl->call_id();
+        _pbrpc_client->call_method(cntl, request, response, done);
+        _sent_count << 1;
+
+        if (_options.test_req_rate <= 0) {
+            brpc::Join(cid1);
+            _options.rate_mtx->unlock();
+        } else {
+            int64_t end_time = butil::gettimeofday_us();
+            int64_t expected_elp = 0;
+            int64_t actual_elp = 0;
+            timeq.push_back(end_time);
+            if (timeq.size() > MAX_QUEUE_SIZE) {
+                actual_elp = end_time - timeq.front();
+                timeq.pop_front();
+                expected_elp = (int64_t)(1000000 * timeq.size() / req_rate);
+            } else {
+                actual_elp = end_time - timeq.front();
+                expected_elp = (int64_t)(1000000 * (timeq.size() - 1) / req_rate);
+            }
+            if (actual_elp < expected_elp){
                 usleep(expected_elp - actual_elp);
             }
         }
+
     }
 }
 
