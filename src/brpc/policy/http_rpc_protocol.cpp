@@ -51,6 +51,8 @@ int is_failed_after_queries(const http_parser* parser);
 int is_failed_after_http_version(const http_parser* parser);
 DECLARE_bool(http_verbose);
 DECLARE_int32(http_verbose_max_body_length);
+// Defined in grpc.cpp
+int64_t ConvertGrpcTimeoutToUS(const std::string* grpc_timeout);
 
 namespace policy {
 
@@ -141,6 +143,7 @@ CommonStrings::CommonStrings()
     , GRPC_ACCEPT_ENCODING_VALUE("identity,gzip")
     , GRPC_STATUS("grpc-status")
     , GRPC_MESSAGE("grpc-message")
+    , GRPC_TIMEOUT("grpc-timeout")
 {}
 
 static CommonStrings* common = NULL;
@@ -512,6 +515,8 @@ void SerializeHttpRequest(butil::IOBuf* /*not used*/,
             json2pb::Pb2JsonOptions opt;
             opt.bytes_to_base64 = cntl->has_pb_bytes_to_base64();
             opt.jsonify_empty_array = cntl->has_pb_jsonify_empty_array();
+            opt.always_print_primitive_fields = cntl->has_always_print_primitive_fields()==false ? FLAGS_pb_always_print_primitive_fields : true;
+            
             opt.enum_option = (FLAGS_pb_enum_as_number
                                ? json2pb::OUTPUT_ENUM_BY_NUMBER
                                : json2pb::OUTPUT_ENUM_BY_NAME);
@@ -581,7 +586,10 @@ void SerializeHttpRequest(butil::IOBuf* /*not used*/,
             */
             // TODO: do we need this?
             hreq.SetHeader(common->TE, common->TRAILERS);
-
+            if (cntl->timeout_ms() >= 0) {
+                hreq.SetHeader(common->GRPC_TIMEOUT,
+                        butil::string_printf("%ldm", cntl->timeout_ms()));
+            }
             // Append compressed and length before body
             AddGrpcPrefix(&cntl->request_attachment(), grpc_compressed);
         }
@@ -745,28 +753,16 @@ HttpResponseSender::~HttpResponseSender() {
                 cntl->SetFailed(ERESPONSE, "Fail to serialize %s", res->GetTypeName().c_str());
             }
         } else {
-            if(FLAGS_pb_always_print_primitive_fields){
-                std::string rs;
-                google::protobuf::util::JsonOptions options;
-                options.always_print_primitive_fields = true;
-                options.preserve_proto_field_names = true;
-                options.always_print_enums_as_ints = (FLAGS_pb_enum_as_number
-                                                      ? json2pb::OUTPUT_ENUM_BY_NUMBER
-                                                      : json2pb::OUTPUT_ENUM_BY_NAME);
-                options.add_whitespace = false;
-                google::protobuf::util::MessageToJsonString(*res,&rs,options);
-                cntl->response_attachment().append(rs);
-            }else{
-                std::string err;
-                json2pb::Pb2JsonOptions opt;
-                opt.bytes_to_base64 = cntl->has_pb_bytes_to_base64();
-                opt.jsonify_empty_array = cntl->has_pb_jsonify_empty_array();
-                opt.enum_option = (FLAGS_pb_enum_as_number
-                                   ? json2pb::OUTPUT_ENUM_BY_NUMBER
-                                   : json2pb::OUTPUT_ENUM_BY_NAME);
-                if (!json2pb::ProtoMessageToJson(*res, &wrapper, opt, &err)) {
-                    cntl->SetFailed(ERESPONSE, "Fail to convert response to json, %s", err.c_str());
-                }
+            std::string err;
+            json2pb::Pb2JsonOptions opt;
+            opt.bytes_to_base64 = cntl->has_pb_bytes_to_base64();
+            opt.jsonify_empty_array = cntl->has_pb_jsonify_empty_array();
+            opt.always_print_primitive_fields = cntl->has_always_print_primitive_fields()==false ? FLAGS_pb_always_print_primitive_fields : true;
+            opt.enum_option = (FLAGS_pb_enum_as_number
+                               ? json2pb::OUTPUT_ENUM_BY_NUMBER
+                               : json2pb::OUTPUT_ENUM_BY_NAME);
+            if (!json2pb::ProtoMessageToJson(*res, &wrapper, opt, &err)) {
+                cntl->SetFailed(ERESPONSE, "Fail to convert response to json, %s", err.c_str());
             }
         }
     }
@@ -1250,6 +1246,7 @@ void ProcessHttpRequest(InputMessageBase *msg) {
         .set_local_side(socket->local_side())
         .set_auth_context(socket->auth_context())
         .set_request_protocol(PROTOCOL_HTTP)
+        .set_begin_time_us(msg->received_us())
         .move_in_server_receiving_sock(socket_guard);
     
     // Read log-id. errno may be set when input to strtoull overflows.
@@ -1437,6 +1434,12 @@ void ProcessHttpRequest(InputMessageBase *msg) {
                             return;
                         }
                     }
+                    int64_t timeout_value_us =
+                        ConvertGrpcTimeoutToUS(req_header.GetHeader(common->GRPC_TIMEOUT));
+                    if (timeout_value_us >= 0) {
+                        accessor.set_deadline_us(
+                                butil::gettimeofday_us() + timeout_value_us);
+                    }
                 }
             } else {
                 encoding = req_header.GetHeader(common->CONTENT_ENCODING);
@@ -1474,7 +1477,7 @@ void ProcessHttpRequest(InputMessageBase *msg) {
         // A http server, just keep content as it is.
         cntl->request_attachment().swap(req_body);
     }
-    
+
     google::protobuf::Closure* done = new HttpResponseSenderAsDone(&resp_sender);
     imsg_guard.reset();  // optional, just release resourse ASAP
 

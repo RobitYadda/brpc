@@ -132,6 +132,7 @@ friend void policy::ProcessThriftRequest(InputMessageBase*);
     static const uint32_t FLAGS_REQUEST_WITH_AUTH = (1 << 15);
     static const uint32_t FLAGS_PB_JSONIFY_EMPTY_ARRAY = (1 << 16);
     static const uint32_t FLAGS_ENABLED_CIRCUIT_BREAKER = (1 << 17);
+    static const uint32_t FLAGS_ALWAYS_PRINT_PRIMITIVE_FIELDS = (1 << 18);
     
 public:
     Controller();
@@ -172,8 +173,15 @@ public:
     // True if a backup request was sent during the RPC.
     bool has_backup_request() const { return has_flag(FLAGS_BACKUP_REQUEST); }
 
-    // Get latency of the RPC call.
-    int64_t latency_us() const { return _end_time_us - _begin_time_us; }
+    // This function has different meanings in client and server side.
+    // In client side it gets latency of the RPC call. While in server side,
+    // it gets queue time before server processes the RPC call.
+    int64_t latency_us() const {
+        if (_end_time_us == UNSET_MAGIC_NUM) {
+            return butil::cpuwide_time_us() - _begin_time_us;
+        }
+        return _end_time_us - _begin_time_us;
+    }
 
     // Response of the RPC call (passed to CallMethod)
     google::protobuf::Message* response() const { return _response; }
@@ -289,6 +297,14 @@ public:
     // of json in HTTP response.
     void set_pb_jsonify_empty_array(bool f) { set_flag(FLAGS_PB_JSONIFY_EMPTY_ARRAY, f); }
     bool has_pb_jsonify_empty_array() const { return has_flag(FLAGS_PB_JSONIFY_EMPTY_ARRAY); }
+    
+    // Whether to always print primitive fields. By default proto3 primitive
+    // fields with default values will be omitted in JSON output. For example, an
+    // int32 field set to 0 will be omitted. Set this flag to true will override
+    // the default behavior and print primitive fields regardless of their values.
+    void set_always_print_primitive_fields(bool f) { set_flag(FLAGS_ALWAYS_PRINT_PRIMITIVE_FIELDS, f); }
+    bool has_always_print_primitive_fields() const { return has_flag(FLAGS_ALWAYS_PRINT_PRIMITIVE_FIELDS); }
+    
 
     // Tell RPC that done of the RPC can be run in the same thread where
     // the RPC is issued, otherwise done is always run in a different thread.
@@ -309,9 +325,11 @@ public:
     // undefined on the client side (may crash).
     // ------------------------------------------------------------------------
 
-    // If true, indicates that the client canceled the RPC or the connection has
-    // broken, so the server may as well give up on replying to it.  The server
-    // should still call the final "done" callback.
+    // Returns true if the client canceled the RPC or the connection has broken,
+    // so the server may as well give up on replying to it. The server should still
+    // call the final "done" callback.
+    // Note: Reaching deadline of the RPC would not affect this function, which means
+    // even if deadline has been reached, this function may still return false.
     bool IsCanceled() const;
 
     // Asks that the given callback be called when the RPC is canceled or the
@@ -479,6 +497,10 @@ public:
 
     // Get sock option. .e.g get vip info through ttm kernel module hook,
     int GetSockOption(int level, int optname, void* optval, socklen_t* optlen);
+
+    // Get deadline of this RPC (since the Epoch in microseconds).
+    // -1 means no deadline.
+    int64_t deadline_us() const { return _deadline_us; }
 
 private:
     struct CompletionInfo {
@@ -663,7 +685,7 @@ private:
     int32_t _connect_timeout_ms;
     int32_t _backup_request_ms;
     // Deadline of this RPC (since the Epoch in microseconds).
-    int64_t _abstime_us;
+    int64_t _deadline_us;
     // Timer registered to trigger RPC timeout event
     bthread_timer_t _timeout_id;
 

@@ -61,7 +61,7 @@ public:
     virtual ~SocketUser() {}
     virtual void BeforeRecycle(Socket*) {};
 
-    // Will be perodically called in a dedicated thread to check the
+    // Will be periodically called in a dedicated thread to check the
     // health.
     // If the return value is 0, the socket is revived.
     // If the return value is ESTOP, the health-checking thread quits.
@@ -316,6 +316,12 @@ public:
     int SetFailed(int error_code, const char* error_fmt, ...)
         __attribute__ ((__format__ (__printf__, 3, 4)));
     static int SetFailed(SocketId id);
+
+    void AddRecentError();
+
+    int64_t recent_error_count() const;
+
+    int isolated_times() const;
 
     void FeedbackCircuitBreaker(int error_code, int64_t latency_us);
 
