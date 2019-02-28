@@ -23,6 +23,8 @@
 #include <brpc/channel.h>
 #include "info_thread.h"
 #include "pb_util.h"
+#include <mutex>
+#include <condition_variable>
 
 namespace pbrpcframework {
 class JsonUtil;
@@ -32,6 +34,10 @@ struct PressOptions {
     std::string method;          //method name (rpc service method)
     int server_type;        // server type: 0 = hulu server, 1 = old pbrpc server, 2 = sofa server
     double test_req_rate;      // 0 = no limit
+    std::mutex *rate_mtx;
+    std::condition_variable *cv;
+    std::mutex *cv_mtx;
+
     int test_thread_num;
     std::string input;
     std::string output;
@@ -65,7 +71,7 @@ struct PressOptions {
         response_compress_type(0),
         attachment_size(0),
         auth(false)
-    {}
+    { rate_mtx = new std::mutex(); cv = new std::condition_variable(); cv_mtx = new std::mutex();}
 };
 
 class PressClient {
@@ -114,11 +120,21 @@ private:
     
     bool new_pbrpc_press_client_by_client_type(int client_type);
     void sync_client();
+    void sync_client_v2();
+    void heart_beat();
+    void sync_clientV3();
     void handle_response(brpc::Controller* cntl,
                          google::protobuf::Message* request,
                          google::protobuf::Message* response,
                          int64_t start_time_ns);
+
+    void heartbeat_responsehandle(brpc::Controller* cntl,
+                                  google::protobuf::Message* request,
+                                  google::protobuf::Message* response,
+                                  int64_t start_time_ns);
+
     static void* sync_call_thread(void* arg);
+    static void* heart_beat_thread(void* arg);
 
     bvar::LatencyRecorder _latency_recorder;
     bvar::Adder<int64_t> _error_count;
@@ -126,12 +142,15 @@ private:
     std::deque<google::protobuf::Message*> _msgs;
     PressClient* _pbrpc_client;
     PressOptions _options;
+    std::atomic_int _sleep_time;
+
     bool _started;
     bool _stop;
     FILE* _output_json;
     google::protobuf::compiler::Importer* _importer;
     google::protobuf::DynamicMessageFactory _factory;
     std::vector<pthread_t> _ttid;
+    pthread_t _ext_tid;
     brpc::InfoThread _info_thr;
 };
 }
